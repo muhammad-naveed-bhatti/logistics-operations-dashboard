@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
-from supabase import create_client
+
+from demo_data import build_demo_data
 
 st.set_page_config(page_title="Logistics Operations Dashboard", page_icon="📦", layout="wide")
 
@@ -12,8 +13,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def has_supabase_config():
+    return bool(st.secrets.get("SUPABASE_URL")) and bool(st.secrets.get("SUPABASE_KEY"))
+
 @st.cache_resource
 def get_supabase():
+    from supabase import create_client
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 @st.cache_data(ttl=10)
@@ -23,6 +28,19 @@ def load_table(name, order_col=None):
         q = q.order(order_col, desc=True)
     return pd.DataFrame(q.execute().data)
 
+def load_data():
+    if has_supabase_config():
+        try:
+            return (
+                load_table("fleet_data", "last_update"),
+                load_table("inventory_items", "updated_at"),
+                load_table("dispatch_log", "event_time"),
+                "Live Supabase"
+            )
+        except Exception:
+            pass
+    fleet, inventory, dispatch = build_demo_data()
+    return fleet, inventory, dispatch, "Demo dataset"
 
 def status_badge(value):
     icons = {"In Transit":"🚚","Delayed":"⚠️","Loading":"📥","Unloading":"📤","Available":"✅","Maintenance":"🛠️"}
@@ -31,16 +49,10 @@ def status_badge(value):
 st.title("Logistics Operations Dashboard")
 st.caption("Fleet • Dispatch • Materials • Aviation / Technical Spares")
 
-try:
-    fleet = load_table("fleet_data", "last_update")
-    inventory = load_table("inventory_items", "updated_at")
-    dispatch = load_table("dispatch_log", "event_time")
-except Exception as exc:
-    st.error("Supabase connection is not configured yet. Add project URL + publishable key to Streamlit secrets after the database is created.")
-    st.code(str(exc))
-    st.stop()
-
+fleet, inventory, dispatch, data_source = load_data()
+st.sidebar.caption(f"Data source: **{data_source}**")
 st.sidebar.header("Operational Filters")
+
 status_options = ["All"] + sorted(fleet["status"].dropna().unique().tolist()) if not fleet.empty else ["All"]
 priority_options = ["All"] + sorted(fleet["priority"].dropna().unique().tolist()) if not fleet.empty else ["All"]
 selected_status = st.sidebar.selectbox("Fleet status", status_options)
@@ -81,31 +93,20 @@ with overview_tab:
     left, right = st.columns([1.15, 1])
     with left:
         st.subheader("Fleet Status Mix")
-        if fleet.empty:
-            st.info("No fleet data available.")
-        else:
-            status_counts = fleet["status"].value_counts().rename_axis("status").reset_index(name="units")
-            st.bar_chart(status_counts.set_index("status"))
+        status_counts = fleet["status"].value_counts().rename_axis("status").reset_index(name="units")
+        st.bar_chart(status_counts.set_index("status"))
     with right:
         st.subheader("Inventory by Category")
-        if inventory.empty:
-            st.info("No inventory data available.")
-        else:
-            category_stock = inventory.groupby("category", as_index=False)["stock_qty"].sum().sort_values("stock_qty", ascending=False)
-            st.bar_chart(category_stock.set_index("category"))
+        category_stock = inventory.groupby("category", as_index=False)["stock_qty"].sum().sort_values("stock_qty", ascending=False)
+        st.bar_chart(category_stock.set_index("category"))
 
     st.subheader("Exception Board")
     exceptions = []
-    if not fleet.empty:
-        for _, r in fleet[fleet["status"].eq("Delayed") | fleet["priority"].eq("Critical")].iterrows():
-            exceptions.append({"Type":"Fleet","Reference":r["truck_id"],"Issue":status_badge(r["status"]),"Detail":r.get("cargo"),"Location":r.get("destination")})
-    if not inventory.empty:
-        for _, r in inventory[inventory["stock_qty"] <= inventory["reorder_level"]].iterrows():
-            exceptions.append({"Type":"Inventory","Reference":r["item_code"],"Issue":"🔻 Reorder","Detail":r["item_name"],"Location":r.get("location")})
-    if exceptions:
-        st.dataframe(pd.DataFrame(exceptions), use_container_width=True, hide_index=True)
-    else:
-        st.success("No operational exceptions.")
+    for _, r in fleet[fleet["status"].eq("Delayed") | fleet["priority"].eq("Critical")].iterrows():
+        exceptions.append({"Type":"Fleet","Reference":r["truck_id"],"Issue":status_badge(r["status"]),"Detail":r["cargo"],"Location":r["destination"]})
+    for _, r in inventory[inventory["stock_qty"] <= inventory["reorder_level"]].iterrows():
+        exceptions.append({"Type":"Inventory","Reference":r["item_code"],"Issue":"🔻 Reorder","Detail":r["item_name"],"Location":r["location"]})
+    st.dataframe(pd.DataFrame(exceptions), use_container_width=True, hide_index=True)
 
 with fleet_tab:
     st.subheader("Fleet Movement Map")
@@ -121,23 +122,17 @@ with fleet_tab:
 
 with materials_tab:
     st.subheader("Materials & Aviation Spares")
-    if inventory.empty:
-        st.info("No inventory records yet.")
-    else:
-        inv = inventory.copy()
-        inv["reorder_status"] = inv.apply(lambda r: "🔴 Reorder" if r["stock_qty"] <= r["reorder_level"] else "🟢 OK", axis=1)
-        category = st.selectbox("Category", ["All"] + sorted(inv["category"].dropna().unique().tolist()))
-        if category != "All":
-            inv = inv[inv["category"] == category]
-        st.dataframe(inv[["item_code","item_name","category","stock_qty","reorder_level","reorder_status","location","condition"]], use_container_width=True, hide_index=True)
+    inv = inventory.copy()
+    inv["reorder_status"] = inv.apply(lambda r: "🔴 Reorder" if r["stock_qty"] <= r["reorder_level"] else "🟢 OK", axis=1)
+    category = st.selectbox("Category", ["All"] + sorted(inv["category"].dropna().unique().tolist()))
+    if category != "All":
+        inv = inv[inv["category"] == category]
+    st.dataframe(inv[["item_code","item_name","category","stock_qty","reorder_level","reorder_status","location","condition"]], use_container_width=True, hide_index=True)
 
 with dispatch_tab:
     st.subheader("Recent Dispatch Events")
-    if dispatch.empty:
-        st.info("No dispatch events yet.")
-    else:
-        display = dispatch.merge(fleet[["id","truck_id"]], left_on="fleet_id", right_on="id", how="left", suffixes=("","_fleet")) if not fleet.empty else dispatch
-        cols = [c for c in ["event_time","truck_id","event_type","details"] if c in display.columns]
-        st.dataframe(display[cols], use_container_width=True, hide_index=True)
+    display = dispatch.merge(fleet[["id","truck_id"]], left_on="fleet_id", right_on="id", how="left") if not dispatch.empty else dispatch
+    cols = [c for c in ["event_time","truck_id","event_type","details"] if c in display.columns]
+    st.dataframe(display[cols], use_container_width=True, hide_index=True)
 
-st.markdown('<p class="small-note">Portfolio demo: Python + Streamlit + Supabase. Public view is read-only; operational writes should use authenticated access.</p>', unsafe_allow_html=True)
+st.markdown(f'<p class="small-note">Portfolio demo • Data source: {data_source} • Python + Streamlit + Supabase-ready architecture.</p>', unsafe_allow_html=True)
