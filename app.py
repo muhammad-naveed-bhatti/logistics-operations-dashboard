@@ -14,7 +14,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def has_supabase_config():
-    return bool(st.secrets.get("SUPABASE_URL")) and bool(st.secrets.get("SUPABASE_KEY"))
+    try:
+        return bool(st.secrets.get("SUPABASE_URL")) and bool(st.secrets.get("SUPABASE_KEY"))
+    except Exception:
+        return False
 
 @st.cache_resource
 def get_supabase():
