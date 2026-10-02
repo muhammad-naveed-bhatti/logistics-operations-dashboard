@@ -1,26 +1,40 @@
-# Logistics Streamlit Dashboard
+# Logistics Operations Dashboard
 
-Portfolio-ready logistics dashboard built with Python, Streamlit and Supabase.
+Portfolio-ready logistics dashboard built with Python and Streamlit, with an optional Supabase backend.
 
-## Scope
-- Fleet / dispatch visibility
-- Live location map from latitude/longitude
-- Status filters and operational alerts
-- Inventory / materials tracking
-- Suitable foundation for aviation spares, technical procurement and logistics supervision portfolio use
-- 10-second cached Supabase reads
+## Why this project exists
+This is a zero-cost portfolio demonstration of logistics operations capability: fleet visibility, dispatch monitoring, inventory/materials control, exception management, and aviation/technical-spares awareness.
 
-## Local setup
-1. Create a dedicated Supabase project.
-2. Run `sql/001_initial_schema.sql` in the Supabase SQL editor.
-3. Copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml`.
-4. Add your Supabase project URL and publishable key.
-5. Install dependencies:
-   `pip install -r requirements.txt`
-6. Run:
-   `streamlit run app.py`
+## Demo mode
+No live database is required. If Supabase secrets are absent, the app automatically loads the realistic dataset in `demo_data.py`. This makes the Streamlit deployment self-contained and suitable for recruiters and portfolio visitors.
+
+## Optional Supabase mode
+When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the same UI reads from Supabase tables.
+
+## Features
+- Fleet KPI scorecard
+- Fleet status and priority filters
+- Vehicle location map
+- Delayed/critical shipment exception board
+- Aviation and technical-spares inventory
+- Reorder alerts
+- Dispatch event log
+- Automatic demo-data fallback
+
+## Run locally
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## Database versioning
+SQL is versioned under `sql/`:
+- `001_initial_schema.sql` — initial schema, indexes, RLS, grants
+- `002_sample_data.sql` — optional database seed data
+
+For future schema changes, add a new numbered migration/checkpoint rather than editing history silently.
 
 ## Security
-- Public/anonymous access is read-only.
-- Authenticated operator access is granted CRUD permissions through RLS policies.
-- Never put a Supabase secret/service-role key in Streamlit client-facing configuration.
+- Never commit `.streamlit/secrets.toml`.
+- Use only a Supabase publishable key in Streamlit.
+- Keep service-role/secret keys out of client-facing configuration.
