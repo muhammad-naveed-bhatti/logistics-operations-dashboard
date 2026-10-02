@@ -1,5 +1,7 @@
 # Logistics Operations Dashboard
 
+**Live Demo:** https://logistics-operations-dashboard-wo4jzwehznchbxovucckxq.streamlit.app/
+
 Portfolio-ready logistics operations system built with Python and Streamlit, with an optional Supabase backend.
 
 ## Purpose
