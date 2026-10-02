@@ -1,25 +1,28 @@
 # Logistics Operations Dashboard
 
-Portfolio-ready logistics dashboard built with Python and Streamlit, with an optional Supabase backend.
+Portfolio-ready logistics operations system built with Python and Streamlit, with an optional Supabase backend.
 
-## Why this project exists
-This is a zero-cost portfolio demonstration of logistics operations capability: fleet visibility, dispatch monitoring, inventory/materials control, exception management, and aviation/technical-spares awareness.
+## Purpose
+This project demonstrates practical logistics-management capability in a recruiter-friendly, zero-cost demo: fleet visibility, dispatch monitoring, inventory/materials control, exception handling, operational KPIs, and aviation/technical-spares awareness.
 
-## Demo mode
-No live database is required. If Supabase secrets are absent, the app automatically loads the realistic dataset in `demo_data.py`. This makes the Streamlit deployment self-contained and suitable for recruiters and portfolio visitors.
+## Zero-cost demo mode
+A live database is not required. If Supabase secrets are absent, the app automatically loads the realistic dataset in `demo_data.py`. This makes the Streamlit deployment self-contained for portfolio visitors.
 
 ## Optional Supabase mode
-When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the same UI reads from Supabase tables.
+When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the same user interface reads from Supabase tables. The public demo can therefore remain free while the repository still demonstrates a database-ready architecture.
 
-## Features
-- Fleet KPI scorecard
+## Dashboard capabilities
+- Executive operational-readiness KPIs
+- Schedule-health and stock-readiness indicators
 - Fleet status and priority filters
 - Vehicle location map
-- Delayed/critical shipment exception board
+- Delay / critical-load exception board
 - Aviation and technical-spares inventory
 - Reorder alerts
 - Dispatch event log
-- Automatic demo-data fallback
+- Automated management brief
+- CSV exports for operational snapshots
+- Automatic local demo-data fallback
 
 ## Run locally
 ```bash
@@ -27,14 +30,27 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Database versioning
-SQL is versioned under `sql/`:
-- `001_initial_schema.sql` — initial schema, indexes, RLS, grants
-- `002_sample_data.sql` — optional database seed data
+## Quality checks
+```bash
+python -m compileall app.py demo_data.py scripts
+python scripts/check_migrations.py
+python scripts/smoke_test.py
+```
 
-For future schema changes, add a new numbered migration/checkpoint rather than editing history silently.
+GitHub Actions runs the same checks on pushes and pull requests.
+
+## Database versioning / migration discipline
+SQL is versioned under `sql/`:
+
+- `001_initial_schema.sql` — initial schema, indexes, RLS and grants
+- `002_sample_data.sql` — optional database seed/checkpoint data
+
+Future schema changes should receive the next numbered migration/checkpoint rather than silently rewriting earlier database history. The migration checker validates sequential numbering.
+
+## Streamlit deployment
+The repository is intentionally self-contained. A public Streamlit deployment can run in demo mode without secrets. Supabase can be connected later without redesigning the dashboard.
 
 ## Security
 - Never commit `.streamlit/secrets.toml`.
 - Use only a Supabase publishable key in Streamlit.
-- Keep service-role/secret keys out of client-facing configuration.
+- Keep service-role / secret keys out of client-facing configuration.
