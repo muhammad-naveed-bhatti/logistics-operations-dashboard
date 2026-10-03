@@ -6,7 +6,8 @@
 -- then review, run advisors, test, and commit the generated migration.
 --
 -- Authorization source for future Supabase Auth:
--- auth.users.raw_app_meta_data ->> 'role'
+-- server-generated JWT claim: auth.jwt() ->> 'user_role'
+-- The claim is populated from public.user_roles by the Custom Access Token Hook.
 -- Never use user-editable raw_user_meta_data for authorization.
 
 create table if not exists public.vehicle_gate_passes (
@@ -90,6 +91,6 @@ alter table public.transport_finance_entries enable row level security;
 -- motor_vehicle_maintenance: maintenance read/update
 -- gate_security: read active passes + INSERT gate movement only
 --
--- Use (select auth.jwt() -> 'app_metadata' ->> 'role') for role checks.
+-- Use (select auth.jwt() ->> 'user_role') for role checks.
 -- Driver ownership policies must additionally bind driver_user_id = (select auth.uid()).
 -- UPDATE policies require matching SELECT policy plus USING and WITH CHECK.
