@@ -33,15 +33,13 @@ def create_gate_pass(client, fleet_id, destination, purpose, issued_by, valid_un
 
 
 def record_gate_movement(client, gate_pass_id, movement_type, gate_name, remarks):
-    return client.rpc(
-        "record_gate_movement",
-        {
-            "p_gate_pass_id": str(gate_pass_id),
-            "p_movement_type": movement_type,
-            "p_gate_name": gate_name,
-            "p_remarks": remarks,
-        },
-    ).execute().data
+    payload = {
+        "gate_pass_id": str(gate_pass_id),
+        "movement_type": movement_type,
+        "gate_name": gate_name,
+        "remarks": remarks,
+    }
+    return client.table("vehicle_gate_movements").insert(payload).execute().data
 
 
 def create_maintenance_job(
@@ -96,12 +94,10 @@ def record_finance_entry(
     amount,
     reference,
 ):
-    return client.rpc(
-        "record_finance_entry",
-        {
-            "p_vehicle_code": vehicle_code or "",
-            "p_category": category,
-            "p_amount": float(amount),
-            "p_reference": reference,
-        },
-    ).execute().data
+    payload = {
+        "vehicle_code": vehicle_code or None,
+        "category": category,
+        "amount": float(amount),
+        "reference": reference,
+    }
+    return client.table("transport_finance_entries").insert(payload).execute().data
