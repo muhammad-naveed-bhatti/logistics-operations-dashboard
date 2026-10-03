@@ -13,6 +13,11 @@ A live database is not required. If Supabase secrets are absent, the app automat
 ## Optional Supabase mode
 When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the same user interface reads from Supabase tables. The public demo can therefore remain free while the repository still demonstrates a database-ready architecture.
 
+## Authentication architecture
+The application now contains a secure-login path for Supabase email/password authentication while preserving a separate recruiter-friendly Portfolio Demo mode.
+
+Authenticated roles are server-assigned and are never selectable from the UI. Permanent RBAC is prepared through `public.user_roles` + a Custom Access Token Hook; see `docs/authentication.md`.
+
 ## Role-based access
 The demo now includes role-specific workspaces for Senior Officers, Log Staff Supervisor, Log Staff, Motor Vehicle Operations, Fleet Drivers, Accountant, Motor Vehicle Maintenance, and Gate Security.
 
@@ -54,7 +59,9 @@ SQL is versioned under `sql/`:
 
 - `001_initial_schema.sql` — initial schema, indexes, RLS and grants
 - `002_sample_data.sql` — optional database seed/checkpoint data
-- `pending_rbac_gate_workflow.sql` — reviewed schema draft for RBAC/gate workflow; intentionally not a migration until Supabase CLI/project is available
+- `pending_rbac_gate_workflow.sql` — reviewed schema draft for gate/maintenance/finance workflow
+- `pending_auth_rbac.sql` — permanent user-role + Auth-hook schema draft
+Both are intentionally pending until the dedicated Supabase project/migration workflow is approved.
 
 Future schema changes should receive the next numbered migration/checkpoint rather than silently rewriting earlier database history. The migration checker validates sequential numbering.
 
