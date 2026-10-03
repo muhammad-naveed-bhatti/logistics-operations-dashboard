@@ -12,6 +12,14 @@ from auth_layer import (
     sign_out,
     supabase_configured,
 )
+from data_access import (
+    create_gate_pass,
+    create_maintenance_job,
+    fetch_workflow_data,
+    record_finance_entry,
+    record_gate_movement,
+    update_maintenance_status,
+)
 from demo_data import build_demo_data, build_role_demo_data
 from rbac import ROLE_CONFIG, has_permission, role_description, role_panels
 
@@ -32,7 +40,6 @@ st.markdown("""
     border-radius: 14px;
 }
 .small-note {opacity:.72;font-size:.86rem;}
-.section-note {opacity:.80;font-size:.93rem;margin-top:-.35rem;}
 .role-chip {
     display:inline-block;
     padding:.28rem .65rem;
@@ -65,15 +72,12 @@ def load_data():
                     "Authenticated Supabase / RLS",
                 )
             except Exception as exc:
-                st.warning(
-                    "Authenticated session is active, but live operational tables are not "
-                    "available yet. Showing fictional portfolio data until the backend migration "
-                    "is deployed."
-                )
+                st.error("Live operational data could not be loaded for this session.")
                 st.caption(str(exc))
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "Supabase error"
 
     fleet, inventory, dispatch = build_demo_data()
-    return fleet, inventory, dispatch, "Demo dataset"
+    return fleet, inventory, dispatch, "Portfolio demo dataset"
 
 
 def render_login():
@@ -85,8 +89,8 @@ def render_login():
     with secure_tab:
         if not supabase_configured():
             st.info(
-                "Secure login is code-ready. Connect the dedicated Supabase project in "
-                "Streamlit secrets to activate email/password authentication."
+                "Secure login is ready. Add the Supabase URL and publishable key "
+                "to Streamlit secrets to activate authenticated access."
             )
         else:
             with st.form("secure_login_form"):
@@ -105,14 +109,12 @@ def render_login():
                     st.error("Login failed. Check the email/password and try again.")
 
         st.caption(
-            "Production roles are assigned by the system administrator and are not "
-            "selectable by authenticated users."
+            "Authenticated roles are assigned by the system and cannot be selected by users."
         )
 
     with demo_tab:
         st.write(
-            "Recruiters and portfolio visitors can explore the fictional demo without "
-            "creating an account."
+            "Recruiters and portfolio visitors can explore fictional data without an account."
         )
         if st.button("Enter Portfolio Demo", use_container_width=True):
             enter_demo("Senior Officers")
@@ -131,6 +133,14 @@ def initialise_role_demo_state():
         st.session_state.gate_movements = movements.to_dict("records")
         st.session_state.maintenance_records = maintenance.to_dict("records")
         st.session_state.finance_entries = finance.to_dict("records")
+
+
+def ensure_columns(frame, columns):
+    frame = frame.copy()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = pd.Series(dtype="object")
+    return frame
 
 
 def format_utc(series):
@@ -168,27 +178,63 @@ def csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
 
-fleet, inventory, dispatch, data_source = load_data()
-initialise_role_demo_state()
 auth_context = current_auth()
 auth_mode = auth_context.get("mode")
 selected_role = auth_context.get("role_name")
+client = authenticated_client() if auth_mode == "authenticated" else None
 
-gate_passes = pd.DataFrame(st.session_state.gate_passes)
-gate_movements = pd.DataFrame(st.session_state.gate_movements)
-maintenance_records = pd.DataFrame(st.session_state.maintenance_records)
-finance_entries = pd.DataFrame(st.session_state.finance_entries)
+fleet, inventory, dispatch, data_source = load_data()
+initialise_role_demo_state()
+
+if auth_mode == "authenticated" and client is not None:
+    try:
+        workflow = fetch_workflow_data(client)
+        gate_passes = workflow["gate_passes"]
+        gate_movements = workflow["gate_movements"]
+        maintenance_records = workflow["maintenance"]
+        finance_entries = workflow["finance"]
+    except Exception as exc:
+        st.error("Role-specific live data could not be loaded.")
+        st.caption(str(exc))
+        gate_passes = pd.DataFrame()
+        gate_movements = pd.DataFrame()
+        maintenance_records = pd.DataFrame()
+        finance_entries = pd.DataFrame()
+else:
+    gate_passes = pd.DataFrame(st.session_state.gate_passes)
+    gate_movements = pd.DataFrame(st.session_state.gate_movements)
+    maintenance_records = pd.DataFrame(st.session_state.maintenance_records)
+    finance_entries = pd.DataFrame(st.session_state.finance_entries)
+
+fleet = ensure_columns(
+    fleet,
+    [
+        "id", "truck_id", "driver", "driver_user_id", "status", "lat", "lon",
+        "destination", "cargo", "priority", "eta", "last_update"
+    ],
+)
+inventory = ensure_columns(
+    inventory,
+    [
+        "item_code", "item_name", "category", "stock_qty", "reorder_level",
+        "location", "condition", "updated_at"
+    ],
+)
+dispatch = ensure_columns(
+    dispatch, ["fleet_id", "event_type", "details", "event_time"]
+)
 
 fleet_count = len(fleet)
-maintenance_count = int((fleet["status"] == "Maintenance").sum()) if not fleet.empty else 0
-delayed = int((fleet["status"] == "Delayed").sum()) if not fleet.empty else 0
-critical = int((fleet["priority"] == "Critical").sum()) if not fleet.empty else 0
+maintenance_count = int((fleet["status"] == "Maintenance").sum()) if fleet_count else 0
+delayed = int((fleet["status"] == "Delayed").sum()) if fleet_count else 0
+critical = int((fleet["priority"] == "Critical").sum()) if fleet_count else 0
 active_movements = int(
     fleet["status"].isin(["In Transit", "Loading", "Unloading", "Delayed"]).sum()
-) if not fleet.empty else 0
+) if fleet_count else 0
 low_stock = int(
-    (inventory["stock_qty"] <= inventory["reorder_level"]).sum()
-) if not inventory.empty else 0
+    (pd.to_numeric(inventory["stock_qty"], errors="coerce").fillna(0)
+     <= pd.to_numeric(inventory["reorder_level"], errors="coerce").fillna(0)).sum()
+) if len(inventory) else 0
 
 operational_units = max(fleet_count - maintenance_count, 0)
 operational_readiness = pct(operational_units, fleet_count)
@@ -202,6 +248,8 @@ with st.sidebar:
         st.success("Authenticated")
         st.caption(auth_context.get("email") or "Signed-in user")
         st.write(f"**Role:** {selected_role}")
+        if auth_context.get("personnel_id"):
+            st.caption(f"Personnel ID: {auth_context['personnel_id']}")
     else:
         st.caption("Portfolio demo mode")
         demo_role = st.selectbox(
@@ -231,9 +279,9 @@ with st.sidebar:
         for permission in sorted(ROLE_CONFIG[selected_role]["permissions"]):
             st.write("✓", permission.replace("_", " ").title())
         if auth_mode == "authenticated":
-            st.caption("Role is assigned server-side and cannot be changed from this UI.")
+            st.caption("Role is server-assigned and database RLS independently enforces access.")
         else:
-            st.caption("Demo role switching is enabled only for portfolio exploration.")
+            st.caption("Role switching is enabled only inside the fictional portfolio demo.")
 
 st.title("Logistics Operations Management System")
 st.caption("Role-based Fleet • Dispatch • Materials • Finance • Maintenance • Gate Control")
@@ -241,11 +289,17 @@ st.markdown(
     f'<span class="role-chip">Current role: {selected_role}</span>',
     unsafe_allow_html=True,
 )
-st.markdown(
-    '<p class="small-note">Portfolio demonstration using fictional operational data. '
-    'Authenticated users receive their role from the identity system; demo visitors may switch roles.</p>',
-    unsafe_allow_html=True,
-)
+if auth_mode == "authenticated":
+    st.markdown(
+        '<p class="small-note">Authenticated RLS session. The current backend uses fictional '
+        'test data for portfolio/system validation.</p>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        '<p class="small-note">Portfolio demonstration using fictional operational data.</p>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_executive_overview():
@@ -270,12 +324,8 @@ def render_executive_overview():
             fleet["status"].value_counts().rename_axis("status").reset_index(name="units")
         )
         st.bar_chart(
-            status_counts,
-            x="status",
-            y="units",
-            horizontal=True,
-            sort="-units",
-            height=300,
+            status_counts, x="status", y="units",
+            horizontal=True, sort="-units", height=300
         )
     with right:
         st.markdown("#### Inventory by Category")
@@ -285,12 +335,8 @@ def render_executive_overview():
             .sort_values("stock_qty", ascending=False)
         )
         st.bar_chart(
-            category_stock,
-            x="category",
-            y="stock_qty",
-            horizontal=True,
-            sort="-stock_qty",
-            height=360,
+            category_stock, x="category", y="stock_qty",
+            horizontal=True, sort="-stock_qty", height=360
         )
 
     st.markdown("#### Exception Board")
@@ -312,7 +358,8 @@ def render_executive_overview():
             ),
         })
     for _, row in inventory[
-        inventory["stock_qty"] <= inventory["reorder_level"]
+        pd.to_numeric(inventory["stock_qty"], errors="coerce").fillna(0)
+        <= pd.to_numeric(inventory["reorder_level"], errors="coerce").fillna(0)
     ].iterrows():
         exceptions.append({
             "Type": "Inventory",
@@ -328,6 +375,10 @@ def render_executive_overview():
 
 def render_fleet():
     st.subheader("Fleet & Movement Control")
+    if fleet.empty:
+        st.info("No fleet rows are available to this role.")
+        return
+
     f1, f2, f3 = st.columns([1, 1, 2])
     with f1:
         selected_status = st.selectbox(
@@ -357,7 +408,7 @@ def render_fleet():
             filtered[["driver", "destination", "cargo", "truck_id"]]
             .fillna("")
             .astype(str)
-            .apply(lambda col: col.str.contains(search, case=False))
+            .apply(lambda col: col.str.contains(search, case=False, regex=False))
             .any(axis=1)
         )
         filtered = filtered[mask]
@@ -394,14 +445,14 @@ def render_fleet():
         table[
             ["truck_id", "driver", "status", "priority", "destination", "cargo", "eta", "last_update"]
         ].rename(columns={
-            "truck_id":"Fleet ID",
-            "driver":"Driver",
-            "status":"Status",
-            "priority":"Priority",
-            "destination":"Destination",
-            "cargo":"Cargo",
-            "eta":"ETA (UTC)",
-            "last_update":"Last Update (UTC)",
+            "truck_id": "Fleet ID",
+            "driver": "Driver",
+            "status": "Status",
+            "priority": "Priority",
+            "destination": "Destination",
+            "cargo": "Cargo",
+            "eta": "ETA (UTC)",
+            "last_update": "Last Update (UTC)",
         }),
         use_container_width=True,
         hide_index=True,
@@ -416,6 +467,10 @@ def render_fleet():
 
 def render_materials():
     st.subheader("Materials & Aviation Spares")
+    if inventory.empty:
+        st.info("No inventory rows are available to this role.")
+        return
+
     serviceable = int((inventory["condition"] == "Serviceable").sum())
     calibration_due = int(
         inventory["condition"].astype(str).str.contains("Calibration Due", case=False).sum()
@@ -427,9 +482,13 @@ def render_materials():
     m4.metric("Calibration Due", calibration_due)
 
     view = inventory.copy()
-    view["Stock Gap"] = view["stock_qty"] - view["reorder_level"]
+    view["Stock Gap"] = (
+        pd.to_numeric(view["stock_qty"], errors="coerce").fillna(0)
+        - pd.to_numeric(view["reorder_level"], errors="coerce").fillna(0)
+    )
     view["Status"] = view.apply(
-        lambda row: "🔴 Reorder" if row["stock_qty"] <= row["reorder_level"] else "🟢 OK",
+        lambda row: "🔴 Reorder"
+        if row["stock_qty"] <= row["reorder_level"] else "🟢 OK",
         axis=1,
     )
     category = st.selectbox(
@@ -442,33 +501,36 @@ def render_materials():
 
     st.dataframe(
         view[
-            ["item_code","item_name","category","stock_qty","reorder_level","Stock Gap","Status","location","condition"]
+            ["item_code", "item_name", "category", "stock_qty", "reorder_level",
+             "Stock Gap", "Status", "location", "condition"]
         ].rename(columns={
-            "item_code":"Item Code",
-            "item_name":"Item",
-            "category":"Category",
-            "stock_qty":"Stock",
-            "reorder_level":"Reorder Level",
-            "location":"Location",
-            "condition":"Condition",
+            "item_code": "Item Code",
+            "item_name": "Item",
+            "category": "Category",
+            "stock_qty": "Stock",
+            "reorder_level": "Reorder Level",
+            "location": "Location",
+            "condition": "Condition",
         }),
         use_container_width=True,
         hide_index=True,
     )
 
-    reorder = inventory[inventory["stock_qty"] <= inventory["reorder_level"]]
+    reorder = inventory[
+        pd.to_numeric(inventory["stock_qty"], errors="coerce").fillna(0)
+        <= pd.to_numeric(inventory["reorder_level"], errors="coerce").fillna(0)
+    ]
     if not reorder.empty:
         st.markdown("#### Reorder Watchlist")
         st.dataframe(
-            reorder[["item_code","item_name","stock_qty","reorder_level","location"]].rename(
-                columns={
-                    "item_code":"Item Code",
-                    "item_name":"Item",
-                    "stock_qty":"Stock",
-                    "reorder_level":"Reorder Level",
-                    "location":"Location",
-                }
-            ),
+            reorder[["item_code", "item_name", "stock_qty", "reorder_level", "location"]]
+            .rename(columns={
+                "item_code": "Item Code",
+                "item_name": "Item",
+                "stock_qty": "Stock",
+                "reorder_level": "Reorder Level",
+                "location": "Location",
+            }),
             use_container_width=True,
             hide_index=True,
         )
@@ -476,6 +538,10 @@ def render_materials():
 
 def render_dispatch():
     st.subheader("Dispatch Log")
+    if dispatch.empty:
+        st.info("No dispatch rows are available to this role.")
+        return
+
     display = dispatch.merge(
         fleet[["id", "truck_id"]],
         left_on="fleet_id",
@@ -494,11 +560,11 @@ def render_dispatch():
 
     display["event_time"] = format_utc(display["event_time"])
     display["event_type"] = display["event_type"].map(event_badge)
-    view = display[["event_time","truck_id","event_type","details"]].rename(columns={
-        "event_time":"Event Time (UTC)",
-        "truck_id":"Fleet ID",
-        "event_type":"Event",
-        "details":"Operational Detail",
+    view = display[["event_time", "truck_id", "event_type", "details"]].rename(columns={
+        "event_time": "Event Time (UTC)",
+        "truck_id": "Fleet ID",
+        "event_type": "Event",
+        "details": "Operational Detail",
     })
     st.dataframe(view, use_container_width=True, hide_index=True)
 
@@ -520,7 +586,8 @@ def render_management_brief():
             f"**{row['truck_id']}** — review ETA/route and escalate the delay for {row['cargo']}."
         )
     for _, row in inventory[
-        inventory["stock_qty"] <= inventory["reorder_level"]
+        pd.to_numeric(inventory["stock_qty"], errors="coerce").fillna(0)
+        <= pd.to_numeric(inventory["reorder_level"], errors="coerce").fillna(0)
     ].iterrows():
         actions.append(
             f"**{row['item_code']}** — replenish {row['item_name']} "
@@ -530,7 +597,57 @@ def render_management_brief():
         actions.append(
             f"**{row['truck_id']}** — track maintenance completion before restoring availability."
         )
-    st.markdown("\n".join(f"- {item}" for item in actions))
+    if actions:
+        st.markdown("\n".join(f"- {item}" for item in actions))
+    else:
+        st.success("No immediate management action is required.")
+
+
+def gate_pass_table(frame):
+    if auth_mode == "authenticated":
+        frame = ensure_columns(
+            frame,
+            [
+                "pass_no", "vehicle_code", "driver_name", "destination", "purpose",
+                "issued_at", "valid_until", "status"
+            ],
+        )
+        view = frame[
+            ["pass_no", "vehicle_code", "driver_name", "destination", "purpose",
+             "issued_at", "valid_until", "status"]
+        ].copy()
+        view["issued_at"] = format_utc(view["issued_at"])
+        view["valid_until"] = format_utc(view["valid_until"])
+        return view.rename(columns={
+            "pass_no": "Gate Pass",
+            "vehicle_code": "Vehicle",
+            "driver_name": "Driver",
+            "destination": "Destination",
+            "purpose": "Purpose",
+            "issued_at": "Issued (UTC)",
+            "valid_until": "Valid Until (UTC)",
+            "status": "Status",
+        })
+
+    frame = ensure_columns(
+        frame,
+        ["pass_no", "fleet_id", "driver", "destination", "purpose", "issued_at", "valid_until", "status"],
+    )
+    view = frame[
+        ["pass_no", "fleet_id", "driver", "destination", "purpose", "issued_at", "valid_until", "status"]
+    ].copy()
+    view["issued_at"] = format_utc(view["issued_at"])
+    view["valid_until"] = format_utc(view["valid_until"])
+    return view.rename(columns={
+        "pass_no": "Gate Pass",
+        "fleet_id": "Vehicle",
+        "driver": "Driver",
+        "destination": "Destination",
+        "purpose": "Purpose",
+        "issued_at": "Issued (UTC)",
+        "valid_until": "Valid Until (UTC)",
+        "status": "Status",
+    })
 
 
 def render_gate_pass_operations(role_name):
@@ -539,14 +656,19 @@ def render_gate_pass_operations(role_name):
         st.error("This role is not permitted to generate gate passes.")
         return
 
+    if fleet.empty:
+        st.info("No fleet vehicles are available to this role.")
+        return
+
     st.caption(
-        "Operations issues the soft gate pass. Gate Security validates it and records actual IN/OUT movement."
+        "Motor Vehicle Operations issues the pass; Gate Security can only validate it "
+        "and record controlled IN/OUT transitions."
     )
 
     with st.form("gate_pass_form"):
-        fleet_id = st.selectbox("Vehicle", fleet["truck_id"].tolist())
-        vehicle = fleet[fleet["truck_id"] == fleet_id].iloc[0]
-        st.text_input("Driver", value=vehicle["driver"], disabled=True)
+        fleet_code = st.selectbox("Vehicle", fleet["truck_id"].tolist())
+        vehicle = fleet[fleet["truck_id"] == fleet_code].iloc[0]
+        st.text_input("Driver", value=str(vehicle["driver"]), disabled=True)
         destination = st.text_input("Destination", value=str(vehicle["destination"]))
         purpose = st.text_input("Movement purpose / cargo", value=str(vehicle["cargo"]))
         valid_hours = st.number_input("Validity (hours)", min_value=1, max_value=48, value=12)
@@ -554,42 +676,66 @@ def render_gate_pass_operations(role_name):
 
     if submitted:
         now = datetime.now(timezone.utc)
-        new_no = f"GP-{1001 + len(st.session_state.gate_passes)}"
-        st.session_state.gate_passes.append({
-            "pass_no": new_no,
-            "fleet_id": fleet_id,
-            "driver": vehicle["driver"],
-            "destination": destination,
-            "purpose": purpose,
-            "issued_by": "MV Operations Desk",
-            "issued_at": now,
-            "valid_until": now + timedelta(hours=int(valid_hours)),
-            "status": "Issued",
-        })
-        st.success(f"Soft gate pass {new_no} generated.")
-        st.rerun()
+        if auth_mode == "authenticated":
+            try:
+                create_gate_pass(
+                    client,
+                    vehicle["id"],
+                    destination,
+                    purpose,
+                    auth_context["user_id"],
+                    now + timedelta(hours=int(valid_hours)),
+                )
+                st.success("Soft gate pass generated in the live RLS backend.")
+                st.rerun()
+            except Exception as exc:
+                st.error("Gate pass could not be generated.")
+                st.caption(str(exc))
+        else:
+            new_no = f"GP-{1001 + len(st.session_state.gate_passes)}"
+            st.session_state.gate_passes.append({
+                "pass_no": new_no,
+                "fleet_id": fleet_code,
+                "driver": vehicle["driver"],
+                "destination": destination,
+                "purpose": purpose,
+                "issued_by": "MV Operations Desk",
+                "issued_at": now,
+                "valid_until": now + timedelta(hours=int(valid_hours)),
+                "status": "Issued",
+            })
+            st.success(f"Soft gate pass {new_no} generated.")
+            st.rerun()
 
-    passes = pd.DataFrame(st.session_state.gate_passes)
-    passes["issued_at"] = format_utc(passes["issued_at"])
-    passes["valid_until"] = format_utc(passes["valid_until"])
-    st.dataframe(passes, use_container_width=True, hide_index=True)
+    if auth_mode == "authenticated" and pd.isna(vehicle.get("driver_user_id")):
+        st.caption(
+            "Selected vehicle has no authenticated driver account linked yet; "
+            "the pass remains visible to Operations and Gate Security."
+        )
+
+    st.markdown("#### Issued Gate Passes")
+    if gate_passes.empty:
+        st.info("No gate pass records are available.")
+    else:
+        st.dataframe(gate_pass_table(gate_passes), use_container_width=True, hide_index=True)
 
 
 def render_driver_panel():
     st.subheader("Fleet Driver Panel")
 
     if auth_mode == "authenticated":
-        driver = auth_context.get("driver_name")
-        if not driver:
-            st.warning(
-                "Driver account is authenticated, but no driver identity mapping is assigned yet."
-            )
+        assignment = fleet.copy()
+        driver = auth_context.get("driver_name") or (
+            assignment.iloc[0]["driver"] if not assignment.empty else None
+        )
+        if assignment.empty:
+            st.warning("No fleet assignment is linked to this driver account.")
             return
-        st.caption(f"Signed-in driver: **{driver}**")
+        st.caption(f"Signed-in driver: **{driver or 'Assigned driver'}**")
     else:
-        driver = st.selectbox("Demo driver identity", sorted(fleet["driver"].unique()))
+        driver = st.selectbox("Demo driver identity", sorted(fleet["driver"].dropna().unique()))
+        assignment = fleet[fleet["driver"] == driver].copy()
 
-    assignment = fleet[fleet["driver"] == driver].copy()
     if assignment.empty:
         st.info("No assignment found.")
         return
@@ -602,24 +748,21 @@ def render_driver_panel():
     c4.metric("Destination", row["destination"])
     st.write("**Cargo / Task:**", row["cargo"])
 
-    passes = pd.DataFrame(st.session_state.gate_passes)
-    own_passes = passes[passes["driver"] == driver].copy()
     st.markdown("#### My Soft Gate Pass")
-    if own_passes.empty:
-        st.info("No active gate pass issued to this driver.")
+    if auth_mode == "authenticated":
+        own_passes = gate_passes.copy()
     else:
-        own_passes["issued_at"] = format_utc(own_passes["issued_at"])
-        own_passes["valid_until"] = format_utc(own_passes["valid_until"])
-        st.dataframe(
-            own_passes[
-                ["pass_no","fleet_id","destination","purpose","issued_at","valid_until","status"]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+        own_passes = ensure_columns(gate_passes, ["driver"])
+        own_passes = own_passes[own_passes["driver"] == driver].copy()
+
+    if own_passes.empty:
+        st.info("No gate pass is currently visible to this driver.")
+    else:
+        st.dataframe(gate_pass_table(own_passes), use_container_width=True, hide_index=True)
+
     st.caption(
-        "Driver access is restricted to own assignment and own soft gate-pass visibility. "
-        "Authenticated driver identity is server-assigned; only demo mode permits driver switching."
+        "Authenticated driver access is restricted by RLS to the driver's own fleet assignment "
+        "and own gate-pass records."
     )
 
 
@@ -629,18 +772,36 @@ def render_gate_security(role_name):
         st.error("This role is not permitted to record gate movement.")
         return
 
-    passes = pd.DataFrame(st.session_state.gate_passes)
+    if auth_mode == "authenticated":
+        passes = ensure_columns(
+            gate_passes,
+            ["id", "pass_no", "vehicle_code", "driver_name", "destination", "purpose", "valid_until", "status"],
+        )
+    else:
+        passes = ensure_columns(
+            gate_passes,
+            ["pass_no", "fleet_id", "driver", "destination", "purpose", "valid_until", "status"],
+        )
+
     active = passes[passes["status"].isin(["Issued", "Vehicle Out"])].copy()
     if active.empty:
-        st.info("No active soft gate pass available.")
+        st.info("No active soft gate pass is available.")
+        render_gate_movement_summary()
         return
 
-    selected_pass = st.selectbox("Soft Gate Pass", active["pass_no"].tolist())
-    selected = active[active["pass_no"] == selected_pass].iloc[0]
+    selected_pass_no = st.selectbox("Soft Gate Pass", active["pass_no"].tolist())
+    selected = active[active["pass_no"] == selected_pass_no].iloc[0]
+
+    if auth_mode == "authenticated":
+        vehicle_code = selected["vehicle_code"]
+        driver_name = selected["driver_name"]
+    else:
+        vehicle_code = selected["fleet_id"]
+        driver_name = selected["driver"]
 
     a, b, c, d = st.columns(4)
-    a.metric("Vehicle", selected["fleet_id"])
-    b.metric("Driver", selected["driver"])
+    a.metric("Vehicle", vehicle_code)
+    b.metric("Driver", driver_name)
     c.metric("Status", selected["status"])
     d.metric("Destination", selected["destination"])
     st.write("**Purpose:**", selected["purpose"])
@@ -655,66 +816,144 @@ def render_gate_security(role_name):
 
     with left:
         if st.button("Record Vehicle OUT", disabled=out_disabled, use_container_width=True):
-            now = datetime.now(timezone.utc)
-            for record in st.session_state.gate_passes:
-                if record["pass_no"] == selected_pass:
-                    record["status"] = "Vehicle Out"
-            st.session_state.gate_movements.append({
-                "pass_no": selected_pass,
-                "fleet_id": selected["fleet_id"],
-                "driver": selected["driver"],
-                "movement": "OUT",
-                "gate": gate_name,
-                "recorded_by": "Gate Security",
-                "event_time": now,
-                "remarks": remarks,
-            })
-            st.success(f"OUT recorded for {selected_pass}.")
-            st.rerun()
+            if auth_mode == "authenticated":
+                try:
+                    record_gate_movement(
+                        client, selected["id"], "OUT", gate_name, remarks
+                    )
+                    st.success(f"OUT recorded for {selected_pass_no}.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("OUT movement could not be recorded.")
+                    st.caption(str(exc))
+            else:
+                now = datetime.now(timezone.utc)
+                for record in st.session_state.gate_passes:
+                    if record["pass_no"] == selected_pass_no:
+                        record["status"] = "Vehicle Out"
+                st.session_state.gate_movements.append({
+                    "pass_no": selected_pass_no,
+                    "fleet_id": vehicle_code,
+                    "driver": driver_name,
+                    "movement": "OUT",
+                    "gate": gate_name,
+                    "recorded_by": "Gate Security",
+                    "event_time": now,
+                    "remarks": remarks,
+                })
+                st.success(f"OUT recorded for {selected_pass_no}.")
+                st.rerun()
 
     with right:
         if st.button("Record Vehicle IN", disabled=in_disabled, use_container_width=True):
-            now = datetime.now(timezone.utc)
-            for record in st.session_state.gate_passes:
-                if record["pass_no"] == selected_pass:
-                    record["status"] = "Closed"
-            st.session_state.gate_movements.append({
-                "pass_no": selected_pass,
-                "fleet_id": selected["fleet_id"],
-                "driver": selected["driver"],
-                "movement": "IN",
-                "gate": gate_name,
-                "recorded_by": "Gate Security",
-                "event_time": now,
-                "remarks": remarks,
-            })
-            st.success(f"IN recorded and gate pass {selected_pass} closed.")
-            st.rerun()
+            if auth_mode == "authenticated":
+                try:
+                    record_gate_movement(
+                        client, selected["id"], "IN", gate_name, remarks
+                    )
+                    st.success(f"IN recorded; {selected_pass_no} closed.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("IN movement could not be recorded.")
+                    st.caption(str(exc))
+            else:
+                now = datetime.now(timezone.utc)
+                for record in st.session_state.gate_passes:
+                    if record["pass_no"] == selected_pass_no:
+                        record["status"] = "Closed"
+                st.session_state.gate_movements.append({
+                    "pass_no": selected_pass_no,
+                    "fleet_id": vehicle_code,
+                    "driver": driver_name,
+                    "movement": "IN",
+                    "gate": gate_name,
+                    "recorded_by": "Gate Security",
+                    "event_time": now,
+                    "remarks": remarks,
+                })
+                st.success(f"IN recorded and {selected_pass_no} closed.")
+                st.rerun()
 
+    st.caption(
+        "Gate Security cannot edit the pass destination, purpose or vehicle assignment; "
+        "only validated IN/OUT transitions are permitted."
+    )
     render_gate_movement_summary()
 
 
 def render_gate_movement_summary():
     st.subheader("Gate Movement Summary")
-    movements = pd.DataFrame(st.session_state.gate_movements)
-    if movements.empty:
-        st.info("No gate movement recorded.")
+
+    if gate_movements.empty:
+        st.info("No gate movement has been recorded.")
         return
-    movements = movements.copy()
-    movements["event_time"] = format_utc(movements["event_time"])
-    out_count = int((movements["movement"] == "OUT").sum())
-    in_count = int((movements["movement"] == "IN").sum())
+
+    if auth_mode == "authenticated":
+        movements = ensure_columns(
+            gate_movements,
+            ["gate_pass_id", "movement_type", "gate_name", "event_time", "remarks"],
+        ).copy()
+        passes = ensure_columns(
+            gate_passes, ["id", "pass_no", "vehicle_code", "driver_name"]
+        )
+        movements = movements.merge(
+            passes[["id", "pass_no", "vehicle_code", "driver_name"]],
+            left_on="gate_pass_id",
+            right_on="id",
+            how="left",
+        )
+        out_count = int((movements["movement_type"] == "OUT").sum())
+        in_count = int((movements["movement_type"] == "IN").sum())
+        movements["event_time"] = format_utc(movements["event_time"])
+        view = movements[
+            ["event_time", "pass_no", "vehicle_code", "driver_name",
+             "movement_type", "gate_name", "remarks"]
+        ].rename(columns={
+            "event_time": "Event Time (UTC)",
+            "pass_no": "Gate Pass",
+            "vehicle_code": "Vehicle",
+            "driver_name": "Driver",
+            "movement_type": "Movement",
+            "gate_name": "Gate",
+            "remarks": "Remarks",
+        })
+    else:
+        movements = ensure_columns(
+            gate_movements,
+            ["event_time", "pass_no", "fleet_id", "driver", "movement", "gate", "remarks"],
+        ).copy()
+        out_count = int((movements["movement"] == "OUT").sum())
+        in_count = int((movements["movement"] == "IN").sum())
+        movements["event_time"] = format_utc(movements["event_time"])
+        view = movements[
+            ["event_time", "pass_no", "fleet_id", "driver", "movement", "gate", "remarks"]
+        ].rename(columns={
+            "event_time": "Event Time (UTC)",
+            "pass_no": "Gate Pass",
+            "fleet_id": "Vehicle",
+            "driver": "Driver",
+            "movement": "Movement",
+            "gate": "Gate",
+            "remarks": "Remarks",
+        })
+
     g1, g2, g3 = st.columns(3)
     g1.metric("Movement Records", len(movements))
     g2.metric("OUT Records", out_count)
     g3.metric("IN Records", in_count)
-    st.dataframe(movements, use_container_width=True, hide_index=True)
+    st.dataframe(view, use_container_width=True, hide_index=True)
 
 
 def render_finance(read_only=True):
     title = "Finance Summary" if read_only else "Accountant Panel"
     st.subheader(title)
-    finance = pd.DataFrame(st.session_state.finance_entries)
+
+    finance = ensure_columns(
+        finance_entries,
+        ["entry_no", "fleet_id", "vehicle_code", "category", "amount", "reference", "entry_time"],
+    ).copy()
+    finance["amount"] = pd.to_numeric(finance["amount"], errors="coerce").fillna(0.0)
+
     total = float(finance["amount"].sum())
     fuel = float(finance.loc[finance["category"] == "Fuel", "amount"].sum())
     maint = float(finance.loc[finance["category"] == "Maintenance", "amount"].sum())
@@ -723,69 +962,206 @@ def render_finance(read_only=True):
     f2.metric("Fuel Cost", f"PKR {fuel:,.0f}")
     f3.metric("Maintenance Cost", f"PKR {maint:,.0f}")
 
-    by_category = finance.groupby("category", as_index=False)["amount"].sum()
-    st.bar_chart(by_category, x="category", y="amount", horizontal=True, height=300)
+    if not finance.empty:
+        by_category = finance.groupby("category", as_index=False)["amount"].sum()
+        st.bar_chart(by_category, x="category", y="amount", horizontal=True, height=300)
 
     if not read_only and has_permission(selected_role, "record_finance"):
         with st.expander("Record finance entry"):
             with st.form("finance_entry_form"):
-                fleet_id = st.selectbox(
-                    "Vehicle",
-                    ["General / Non-vehicle"] + fleet["truck_id"].tolist(),
-                    key="finance_vehicle",
-                )
+                if auth_mode == "authenticated":
+                    vehicle_code = st.text_input(
+                        "Vehicle code (optional)",
+                        help="Example: FLT-109. Leave blank for a general/non-vehicle cost.",
+                    )
+                else:
+                    vehicle_code = st.selectbox(
+                        "Vehicle",
+                        ["General / Non-vehicle"] + fleet["truck_id"].tolist(),
+                        key="finance_vehicle",
+                    )
                 category = st.selectbox(
                     "Cost category",
                     ["Fuel", "Maintenance", "Toll", "Handling", "Other"],
                     key="finance_category",
                 )
                 amount = st.number_input(
-                    "Amount (PKR)",
-                    min_value=0.0,
-                    step=500.0,
-                    key="finance_amount",
+                    "Amount (PKR)", min_value=0.0, step=500.0, key="finance_amount"
                 )
                 reference = st.text_input(
-                    "Reference / narration",
-                    key="finance_reference",
+                    "Reference / narration", key="finance_reference"
                 )
                 submitted = st.form_submit_button("Record Finance Entry")
 
             if submitted:
-                new_no = f"FN-{len(st.session_state.finance_entries) + 1:03d}"
-                st.session_state.finance_entries.append({
-                    "entry_no": new_no,
-                    "fleet_id": None if fleet_id == "General / Non-vehicle" else fleet_id,
-                    "category": category,
-                    "amount": float(amount),
-                    "reference": reference or "Demo finance entry",
-                    "entry_time": datetime.now(timezone.utc),
-                })
-                st.success(f"{new_no} recorded.")
-                st.rerun()
+                if auth_mode == "authenticated":
+                    try:
+                        record_finance_entry(
+                            client,
+                            vehicle_code.strip(),
+                            category,
+                            amount,
+                            reference or "Finance entry",
+                        )
+                        st.success("Finance entry recorded in the live RLS backend.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Finance entry could not be recorded.")
+                        st.caption(str(exc))
+                else:
+                    new_no = f"FN-{len(st.session_state.finance_entries) + 1:03d}"
+                    st.session_state.finance_entries.append({
+                        "entry_no": new_no,
+                        "fleet_id": (
+                            None if vehicle_code == "General / Non-vehicle"
+                            else vehicle_code
+                        ),
+                        "category": category,
+                        "amount": float(amount),
+                        "reference": reference or "Demo finance entry",
+                        "entry_time": datetime.now(timezone.utc),
+                    })
+                    st.success(f"{new_no} recorded.")
+                    st.rerun()
 
-    view = pd.DataFrame(st.session_state.finance_entries).copy()
-    view["entry_time"] = format_utc(view["entry_time"])
+    if finance.empty:
+        st.info("No finance entries are currently visible to this role.")
+        return
+
+    finance["entry_time"] = format_utc(finance["entry_time"])
+    if auth_mode == "authenticated":
+        view = finance[
+            ["entry_no", "vehicle_code", "category", "amount", "reference", "entry_time"]
+        ].rename(columns={
+            "entry_no": "Entry",
+            "vehicle_code": "Vehicle",
+            "category": "Category",
+            "amount": "Amount (PKR)",
+            "reference": "Reference",
+            "entry_time": "Entry Time (UTC)",
+        })
+    else:
+        view = finance[
+            ["entry_no", "fleet_id", "category", "amount", "reference", "entry_time"]
+        ].rename(columns={
+            "entry_no": "Entry",
+            "fleet_id": "Vehicle",
+            "category": "Category",
+            "amount": "Amount (PKR)",
+            "reference": "Reference",
+            "entry_time": "Entry Time (UTC)",
+        })
     st.dataframe(view, use_container_width=True, hide_index=True)
 
 
 def render_maintenance(role_name, read_only=False):
     title = "Maintenance Overview" if read_only else "Motor Vehicle Maintenance Panel"
     st.subheader(title)
-    records = pd.DataFrame(st.session_state.maintenance_records)
 
-    open_jobs = int((records["status"] != "Completed").sum())
-    high = int((records["priority"] == "High").sum())
-    completed = int((records["status"] == "Completed").sum())
+    records = ensure_columns(
+        maintenance_records,
+        [
+            "id", "job_no", "fleet_id", "work_type", "complaint",
+            "priority", "status", "opened_at", "target_completion", "closed_at"
+        ],
+    ).copy()
+
+    fleet_lookup = dict(zip(fleet["id"].astype(str), fleet["truck_id"].astype(str)))
+    records["vehicle_code"] = records["fleet_id"].astype(str).map(fleet_lookup)
+
+    open_jobs = int((records["status"] != "Completed").sum()) if not records.empty else 0
+    high = int((records["priority"] == "High").sum()) if not records.empty else 0
+    completed = int((records["status"] == "Completed").sum()) if not records.empty else 0
     m1, m2, m3 = st.columns(3)
     m1.metric("Open Jobs", open_jobs)
     m2.metric("High Priority", high)
     m3.metric("Completed", completed)
 
+    if not read_only and has_permission(role_name, "update_maintenance"):
+        with st.expander("Open maintenance job"):
+            with st.form("maintenance_job_form"):
+                vehicle_code = st.selectbox(
+                    "Vehicle",
+                    fleet["truck_id"].tolist(),
+                    key="maintenance_vehicle",
+                ) if not fleet.empty else None
+                work_type = st.selectbox(
+                    "Work type",
+                    ["Corrective", "Preventive", "Inspection"],
+                    key="maintenance_work_type",
+                )
+                complaint = st.text_area("Complaint / work required")
+                priority = st.selectbox(
+                    "Priority", ["Low", "Normal", "High", "Critical"],
+                    index=1, key="maintenance_priority"
+                )
+                target_hours = st.number_input(
+                    "Target completion (hours)",
+                    min_value=1, max_value=168, value=24
+                )
+                submitted = st.form_submit_button("Open Maintenance Job")
+
+            if submitted:
+                if not vehicle_code:
+                    st.error("No fleet vehicle is available.")
+                elif auth_mode == "authenticated":
+                    vehicle = fleet[fleet["truck_id"] == vehicle_code].iloc[0]
+                    try:
+                        create_maintenance_job(
+                            client,
+                            vehicle["id"],
+                            work_type,
+                            complaint or "Maintenance task",
+                            priority,
+                            auth_context["user_id"],
+                            datetime.now(timezone.utc) + timedelta(hours=int(target_hours)),
+                        )
+                        st.success("Maintenance job opened in the live RLS backend.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Maintenance job could not be opened.")
+                        st.caption(str(exc))
+                else:
+                    new_no = f"MX-{len(st.session_state.maintenance_records) + 1:03d}"
+                    st.session_state.maintenance_records.append({
+                        "job_no": new_no,
+                        "fleet_id": vehicle_code,
+                        "work_type": work_type,
+                        "complaint": complaint or "Maintenance task",
+                        "priority": priority,
+                        "status": "Scheduled",
+                        "opened_at": datetime.now(timezone.utc),
+                        "target_completion": (
+                            datetime.now(timezone.utc) + timedelta(hours=int(target_hours))
+                        ),
+                    })
+                    st.success(f"{new_no} opened.")
+                    st.rerun()
+
+    if records.empty:
+        st.info("No maintenance records are currently visible to this role.")
+        return
+
     view = records.copy()
     view["opened_at"] = format_utc(view["opened_at"])
     view["target_completion"] = format_utc(view["target_completion"])
-    st.dataframe(view, use_container_width=True, hide_index=True)
+    st.dataframe(
+        view[
+            ["job_no", "vehicle_code", "work_type", "complaint", "priority",
+             "status", "opened_at", "target_completion"]
+        ].rename(columns={
+            "job_no": "Job",
+            "vehicle_code": "Vehicle",
+            "work_type": "Work Type",
+            "complaint": "Complaint / Work",
+            "priority": "Priority",
+            "status": "Status",
+            "opened_at": "Opened (UTC)",
+            "target_completion": "Target Completion (UTC)",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     if read_only or not has_permission(role_name, "update_maintenance"):
         return
@@ -793,31 +1169,37 @@ def render_maintenance(role_name, read_only=False):
     st.markdown("#### Update Workshop Job")
     selected_job = st.selectbox("Job", records["job_no"].tolist())
     current = records[records["job_no"] == selected_job].iloc[0]
-    new_status = st.selectbox(
-        "New status",
-        ["Scheduled", "In Progress", "Awaiting Parts", "Completed"],
-        index=["Scheduled", "In Progress", "Awaiting Parts", "Completed"].index(current["status"])
-        if current["status"] in ["Scheduled", "In Progress", "Awaiting Parts", "Completed"]
-        else 0,
-    )
+    statuses = ["Scheduled", "In Progress", "Awaiting Parts", "Completed"]
+    current_index = statuses.index(current["status"]) if current["status"] in statuses else 0
+    new_status = st.selectbox("New status", statuses, index=current_index)
+
     if st.button("Update maintenance status"):
-        for record in st.session_state.maintenance_records:
-            if record["job_no"] == selected_job:
-                record["status"] = new_status
-        st.success(f"{selected_job} updated to {new_status}.")
-        st.rerun()
+        if auth_mode == "authenticated":
+            try:
+                update_maintenance_status(client, current["id"], new_status)
+                st.success(f"{selected_job} updated to {new_status}.")
+                st.rerun()
+            except Exception as exc:
+                st.error("Maintenance status could not be updated.")
+                st.caption(str(exc))
+        else:
+            for record in st.session_state.maintenance_records:
+                if record["job_no"] == selected_job:
+                    record["status"] = new_status
+            st.success(f"{selected_job} updated to {new_status}.")
+            st.rerun()
 
 
 PANEL_RENDERERS = {
-    "Executive Overview": lambda: render_executive_overview(),
-    "Fleet & Map": lambda: render_fleet(),
-    "Materials": lambda: render_materials(),
-    "Dispatch Log": lambda: render_dispatch(),
-    "Management Brief": lambda: render_management_brief(),
+    "Executive Overview": render_executive_overview,
+    "Fleet & Map": render_fleet,
+    "Materials": render_materials,
+    "Dispatch Log": render_dispatch,
+    "Management Brief": render_management_brief,
     "Gate Pass Operations": lambda: render_gate_pass_operations(selected_role),
-    "Driver Panel": lambda: render_driver_panel(),
+    "Driver Panel": render_driver_panel,
     "Gate Security Panel": lambda: render_gate_security(selected_role),
-    "Gate Movement Summary": lambda: render_gate_movement_summary(),
+    "Gate Movement Summary": render_gate_movement_summary,
     "Finance Summary": lambda: render_finance(read_only=True),
     "Accountant Panel": lambda: render_finance(read_only=False),
     "Maintenance Overview": lambda: render_maintenance(selected_role, read_only=True),
@@ -828,8 +1210,8 @@ PANEL_RENDERERS[selected_panel]()
 
 generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 st.markdown(
-    f'<p class="small-note">Portfolio demo • Role: {selected_role} • Data source: {data_source} • '
+    f'<p class="small-note">Role: {selected_role} • Data source: {data_source} • '
     f'Generated: {generated_at} • Access mode: {auth_mode} • '
-    f'Authenticated mode is designed for Supabase Auth + RLS enforcement.</p>',
+    f'RLS is the authorization boundary in authenticated mode.</p>',
     unsafe_allow_html=True,
 )
