@@ -13,6 +13,13 @@ A live database is not required. If Supabase secrets are absent, the app automat
 ## Optional Supabase mode
 When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the same user interface reads from Supabase tables. The public demo can therefore remain free while the repository still demonstrates a database-ready architecture.
 
+## Role-based access
+The demo now includes role-specific workspaces for Senior Officers, Log Staff Supervisor, Log Staff, Motor Vehicle Operations, Fleet Drivers, Accountant, Motor Vehicle Maintenance, and Gate Security.
+
+Motor Vehicle Operations can generate soft gate passes. Gate Security can validate the active pass and record vehicle IN/OUT movements. Driver access is limited to the selected driver's own assignment/pass in the demo simulation.
+
+See `docs/role_matrix.md` for the full access matrix. UI restrictions are a demo layer; production enforcement will use Supabase Auth + RLS.
+
 ## Dashboard capabilities
 - Executive operational-readiness KPIs
 - Schedule-health and stock-readiness indicators
@@ -37,6 +44,7 @@ streamlit run app.py
 python -m compileall app.py demo_data.py scripts
 python scripts/check_migrations.py
 python scripts/smoke_test.py
+python scripts/app_smoke_test.py
 ```
 
 GitHub Actions runs the same checks on pushes and pull requests.
@@ -46,6 +54,7 @@ SQL is versioned under `sql/`:
 
 - `001_initial_schema.sql` — initial schema, indexes, RLS and grants
 - `002_sample_data.sql` — optional database seed/checkpoint data
+- `pending_rbac_gate_workflow.sql` — reviewed schema draft for RBAC/gate workflow; intentionally not a migration until Supabase CLI/project is available
 
 Future schema changes should receive the next numbered migration/checkpoint rather than silently rewriting earlier database history. The migration checker validates sequential numbering.
 
