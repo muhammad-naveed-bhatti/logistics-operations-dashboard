@@ -13,6 +13,7 @@ def build_demo_data():
         {"id":"fleet-106","truck_id":"FLT-106","driver":"Noman Ali","status":"In Transit","lat":24.8607,"lon":67.0011,"destination":"Karachi Cargo Terminal","cargo":"Engine consumables","priority":"Critical","eta":now+timedelta(hours=10),"last_update":now-timedelta(minutes=12)},
         {"id":"fleet-107","truck_id":"FLT-107","driver":"Fahad Khan","status":"Unloading","lat":30.1575,"lon":71.5249,"destination":"Multan Supply Depot","cargo":"Ground support equipment spares","priority":"High","eta":now+timedelta(hours=1),"last_update":now-timedelta(minutes=4)},
         {"id":"fleet-108","truck_id":"FLT-108","driver":"Imran Shah","status":"Available","lat":31.7054,"lon":72.9784,"destination":"Sargodha Materials Depot","cargo":"Routine replenishment","priority":"Low","eta":pd.NaT,"last_update":now-timedelta(minutes=25)},
+        {"id":"fleet-109","truck_id":"FLT-109","driver":"Allah Ditta","status":"Available","lat":31.5204,"lon":74.3587,"destination":"Lahore Transport Yard","cargo":"Standby / local tasking","priority":"Normal","eta":pd.NaT,"last_update":now-timedelta(minutes=6)},
     ])
 
     inventory = pd.DataFrame([
