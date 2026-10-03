@@ -35,3 +35,89 @@ def build_demo_data():
         {"fleet_id":"fleet-107","event_type":"ARRIVED","details":"GSE spares arrived at Multan Supply Depot.","event_time":now-timedelta(minutes=14)},
     ])
     return fleet, inventory, dispatch
+
+
+
+def build_role_demo_data():
+    now = datetime.now(timezone.utc)
+
+    gate_passes = pd.DataFrame([
+        {
+            "pass_no": "GP-1001",
+            "fleet_id": "FLT-101",
+            "driver": "Ahsan Malik",
+            "destination": "Lahore Dry Port",
+            "purpose": "Aircraft wheel assemblies delivery",
+            "issued_by": "MV Operations Desk",
+            "issued_at": now - timedelta(hours=2),
+            "valid_until": now + timedelta(hours=6),
+            "status": "Issued",
+        },
+        {
+            "pass_no": "GP-1002",
+            "fleet_id": "FLT-106",
+            "driver": "Noman Ali",
+            "destination": "Karachi Cargo Terminal",
+            "purpose": "Engine consumables movement",
+            "issued_by": "MV Operations Desk",
+            "issued_at": now - timedelta(hours=3),
+            "valid_until": now + timedelta(hours=9),
+            "status": "Vehicle Out",
+        },
+    ])
+
+    gate_movements = pd.DataFrame([
+        {
+            "pass_no": "GP-1002",
+            "fleet_id": "FLT-106",
+            "driver": "Noman Ali",
+            "movement": "OUT",
+            "gate": "Main Gate",
+            "recorded_by": "Gate Security",
+            "event_time": now - timedelta(hours=2, minutes=45),
+            "remarks": "Soft gate pass verified.",
+        }
+    ])
+
+    maintenance_records = pd.DataFrame([
+        {
+            "job_no": "MX-001",
+            "fleet_id": "FLT-105",
+            "work_type": "Corrective",
+            "complaint": "Brake inspection and workshop check",
+            "priority": "High",
+            "status": "In Progress",
+            "opened_at": now - timedelta(hours=5),
+            "target_completion": now + timedelta(hours=8),
+        },
+        {
+            "job_no": "MX-002",
+            "fleet_id": "FLT-104",
+            "work_type": "Preventive",
+            "complaint": "Scheduled oil/filter service",
+            "priority": "Normal",
+            "status": "Scheduled",
+            "opened_at": now - timedelta(hours=1),
+            "target_completion": now + timedelta(days=1),
+        },
+        {
+            "job_no": "MX-003",
+            "fleet_id": "FLT-108",
+            "work_type": "Inspection",
+            "complaint": "Tyre and battery condition inspection",
+            "priority": "Low",
+            "status": "Completed",
+            "opened_at": now - timedelta(days=1),
+            "target_completion": now - timedelta(hours=3),
+        },
+    ])
+
+    finance_entries = pd.DataFrame([
+        {"entry_no":"FN-001","fleet_id":"FLT-101","category":"Fuel","amount":28500.0,"reference":"Fuel issue / movement","entry_time":now-timedelta(hours=4)},
+        {"entry_no":"FN-002","fleet_id":"FLT-103","category":"Toll","amount":6500.0,"reference":"Route toll / motorway","entry_time":now-timedelta(hours=3)},
+        {"entry_no":"FN-003","fleet_id":"FLT-105","category":"Maintenance","amount":42000.0,"reference":"Brake inspection / workshop","entry_time":now-timedelta(hours=2)},
+        {"entry_no":"FN-004","fleet_id":"FLT-106","category":"Fuel","amount":36000.0,"reference":"Long-route fuel issue","entry_time":now-timedelta(hours=1)},
+        {"entry_no":"FN-005","fleet_id":"FLT-107","category":"Handling","amount":8500.0,"reference":"Loading/unloading support","entry_time":now-timedelta(minutes=40)},
+    ])
+
+    return gate_passes, gate_movements, maintenance_records, finance_entries
