@@ -62,6 +62,8 @@ def sign_in(email, password):
         "email": user.email,
         "role_name": role_name,
         "role_slug": role_slug,
+        "driver_name": app_metadata.get("driver_name"),
+        "personnel_id": app_metadata.get("personnel_id"),
         "access_token": session.access_token if session else None,
         "refresh_token": session.refresh_token if session else None,
     }
