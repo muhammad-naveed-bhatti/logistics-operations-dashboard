@@ -3,6 +3,15 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import streamlit as st
 
+from auth_layer import (
+    authenticated_client,
+    current_auth,
+    enter_demo,
+    set_demo_role,
+    sign_in,
+    sign_out,
+    supabase_configured,
+)
 from demo_data import build_demo_data, build_role_demo_data
 from rbac import ROLE_CONFIG, has_permission, role_description, role_panels
 
@@ -36,40 +45,83 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def has_supabase_config():
-    try:
-        return bool(st.secrets.get("SUPABASE_URL")) and bool(st.secrets.get("SUPABASE_KEY"))
-    except Exception:
-        return False
-
-
-@st.cache_resource
-def get_supabase():
-    from supabase import create_client
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-
-
-@st.cache_data(ttl=10)
-def load_table(name, order_col=None):
-    query = get_supabase().table(name).select("*")
+def load_authenticated_table(client, name, order_col=None):
+    query = client.table(name).select("*")
     if order_col:
         query = query.order(order_col, desc=True)
     return pd.DataFrame(query.execute().data)
 
 
 def load_data():
-    if has_supabase_config():
-        try:
-            return (
-                load_table("fleet_data", "last_update"),
-                load_table("inventory_items", "updated_at"),
-                load_table("dispatch_log", "event_time"),
-                "Live Supabase",
-            )
-        except Exception:
-            pass
+    auth = current_auth()
+    if auth and auth.get("mode") == "authenticated":
+        client = authenticated_client()
+        if client is not None:
+            try:
+                return (
+                    load_authenticated_table(client, "fleet_data", "last_update"),
+                    load_authenticated_table(client, "inventory_items", "updated_at"),
+                    load_authenticated_table(client, "dispatch_log", "event_time"),
+                    "Authenticated Supabase / RLS",
+                )
+            except Exception as exc:
+                st.warning(
+                    "Authenticated session is active, but live operational tables are not "
+                    "available yet. Showing fictional portfolio data until the backend migration "
+                    "is deployed."
+                )
+                st.caption(str(exc))
+
     fleet, inventory, dispatch = build_demo_data()
     return fleet, inventory, dispatch, "Demo dataset"
+
+
+def render_login():
+    st.title("Logistics Operations Management System")
+    st.caption("Secure role-based access • Fleet • Finance • Maintenance • Gate Control")
+
+    secure_tab, demo_tab = st.tabs(["Secure Login", "Portfolio Demo"])
+
+    with secure_tab:
+        if not supabase_configured():
+            st.info(
+                "Secure login is code-ready. Connect the dedicated Supabase project in "
+                "Streamlit secrets to activate email/password authentication."
+            )
+        else:
+            with st.form("secure_login_form"):
+                email = st.text_input("Email")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign in", use_container_width=True)
+
+            if submitted:
+                try:
+                    sign_in(email.strip(), password)
+                    st.success("Signed in successfully.")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error("Login failed. Check the email/password and try again.")
+
+        st.caption(
+            "Production roles are assigned by the system administrator and are not "
+            "selectable by authenticated users."
+        )
+
+    with demo_tab:
+        st.write(
+            "Recruiters and portfolio visitors can explore the fictional demo without "
+            "creating an account."
+        )
+        if st.button("Enter Portfolio Demo", use_container_width=True):
+            enter_demo("Senior Officers")
+            st.rerun()
+
+
+if current_auth() is None:
+    render_login()
+    st.stop()
 
 
 def initialise_role_demo_state():
@@ -118,6 +170,9 @@ def csv_bytes(df):
 
 fleet, inventory, dispatch, data_source = load_data()
 initialise_role_demo_state()
+auth_context = current_auth()
+auth_mode = auth_context.get("mode")
+selected_role = auth_context.get("role_name")
 
 gate_passes = pd.DataFrame(st.session_state.gate_passes)
 gate_movements = pd.DataFrame(st.session_state.gate_movements)
@@ -142,12 +197,23 @@ stock_readiness = pct(max(len(inventory) - low_stock, 0), len(inventory))
 attention_items = delayed + low_stock
 
 with st.sidebar:
-    st.header("Role-Based Access")
-    selected_role = st.selectbox(
-        "Demo role",
-        list(ROLE_CONFIG.keys()),
-        help="Portfolio demo: this simulates role-based access. Real enforcement will use Auth + database RLS.",
-    )
+    st.header("Access")
+    if auth_mode == "authenticated":
+        st.success("Authenticated")
+        st.caption(auth_context.get("email") or "Signed-in user")
+        st.write(f"**Role:** {selected_role}")
+    else:
+        st.caption("Portfolio demo mode")
+        demo_role = st.selectbox(
+            "Demo role",
+            list(ROLE_CONFIG.keys()),
+            index=list(ROLE_CONFIG.keys()).index(selected_role),
+            help="Demo only. Authenticated users cannot choose their own role.",
+        )
+        if demo_role != selected_role:
+            set_demo_role(demo_role)
+            selected_role = demo_role
+
     st.caption(role_description(selected_role))
     selected_panel = st.radio("Workspace", role_panels(selected_role))
 
@@ -157,13 +223,17 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
+    if st.button("Sign out / Exit demo", use_container_width=True):
+        sign_out()
+        st.rerun()
+
     with st.expander("Access restrictions"):
-        permissions = sorted(ROLE_CONFIG[selected_role]["permissions"])
-        for permission in permissions:
+        for permission in sorted(ROLE_CONFIG[selected_role]["permissions"]):
             st.write("✓", permission.replace("_", " ").title())
-        st.caption(
-            "UI hiding is only the demo layer. Production security must also enforce these rules in Auth/RLS."
-        )
+        if auth_mode == "authenticated":
+            st.caption("Role is assigned server-side and cannot be changed from this UI.")
+        else:
+            st.caption("Demo role switching is enabled only for portfolio exploration.")
 
 st.title("Logistics Operations Management System")
 st.caption("Role-based Fleet • Dispatch • Materials • Finance • Maintenance • Gate Control")
@@ -172,7 +242,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p class="small-note">Portfolio demonstration using fictional operational data.</p>',
+    '<p class="small-note">Portfolio demonstration using fictional operational data. '
+    'Authenticated users receive their role from the identity system; demo visitors may switch roles.</p>',
     unsafe_allow_html=True,
 )
 
@@ -506,7 +577,18 @@ def render_gate_pass_operations(role_name):
 
 def render_driver_panel():
     st.subheader("Fleet Driver Panel")
-    driver = st.selectbox("Demo driver identity", sorted(fleet["driver"].unique()))
+
+    if auth_mode == "authenticated":
+        driver = auth_context.get("driver_name")
+        if not driver:
+            st.warning(
+                "Driver account is authenticated, but no driver identity mapping is assigned yet."
+            )
+            return
+        st.caption(f"Signed-in driver: **{driver}**")
+    else:
+        driver = st.selectbox("Demo driver identity", sorted(fleet["driver"].unique()))
+
     assignment = fleet[fleet["driver"] == driver].copy()
     if assignment.empty:
         st.info("No assignment found.")
@@ -535,7 +617,10 @@ def render_driver_panel():
             use_container_width=True,
             hide_index=True,
         )
-    st.caption("Driver access is restricted to own assignment and own soft gate-pass visibility.")
+    st.caption(
+        "Driver access is restricted to own assignment and own soft gate-pass visibility. "
+        "Authenticated driver identity is server-assigned; only demo mode permits driver switching."
+    )
 
 
 def render_gate_security(role_name):
@@ -744,6 +829,7 @@ PANEL_RENDERERS[selected_panel]()
 generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 st.markdown(
     f'<p class="small-note">Portfolio demo • Role: {selected_role} • Data source: {data_source} • '
-    f'Generated: {generated_at} • UI RBAC simulation; production enforcement requires Auth + RLS.</p>',
+    f'Generated: {generated_at} • Access mode: {auth_mode} • '
+    f'Authenticated mode is designed for Supabase Auth + RLS enforcement.</p>',
     unsafe_allow_html=True,
 )
