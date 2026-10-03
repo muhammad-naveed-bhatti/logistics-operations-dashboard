@@ -38,8 +38,8 @@ The Streamlit UI first reads safe server claims when available, then falls back 
 1. Create the dedicated free Supabase project.
 2. Apply the initial schema and RBAC/gate/auth schema through the migration workflow.
 3. Explicitly grant Data API privileges required by each table.
-4. Enable the Custom Access Token Hook.
-5. Create test users and assign one role to each user in `public.user_roles`.
+4. Optionally enable the Custom Access Token Hook if JWT convenience claims are desired; RLS does not depend on it.
+5. Create Auth users. The allowlisted demo accounts are auto-provisioned by database trigger.
 6. Run RLS/security advisors and role-by-role access tests.
 7. Add only the project URL + publishable key to Streamlit secrets.
 8. Verify secure login, logout, role assignment, driver ownership and prohibited cross-role actions.
@@ -57,3 +57,13 @@ The private database registry pre-approves these role mappings:
 Creating an Auth user with one of these addresses automatically provisions `public.user_roles` and `public.personnel_profiles`. The driver identity also binds to the fictional Allah Ditta fleet assignment.
 
 Passwords are never stored in the repository or migration history.
+
+
+## Restricted write workflows
+
+- **Gate Security:** inserts a gate movement only. A private trigger verifies the user's permanent role, locks the gate-pass row, validates the legal transition, stamps `recorded_by = auth.uid()`, and updates the pass status. Gate Security has no direct gate-pass update policy.
+- **Motor Vehicle Maintenance:** may insert maintenance jobs only with `opened_by = auth.uid()`; updates remain limited by maintenance-role RLS.
+- **Accountant:** inserts finance rows only. A private trigger validates the accountant role, resolves an optional vehicle code to the canonical fleet UUID/code, stamps the authenticated recorder, and generates the entry number.
+- **Motor Vehicle Operations:** creates soft gate passes; a server-side trigger canonicalizes vehicle code, driver name and linked driver user from the selected fleet record.
+
+These database controls remain active even if the Streamlit UI is bypassed.
