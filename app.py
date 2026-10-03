@@ -640,11 +640,48 @@ def render_finance(read_only=True):
 
     by_category = finance.groupby("category", as_index=False)["amount"].sum()
     st.bar_chart(by_category, x="category", y="amount", horizontal=True, height=300)
-    view = finance.copy()
+
+    if not read_only and has_permission(selected_role, "record_finance"):
+        with st.expander("Record finance entry"):
+            with st.form("finance_entry_form"):
+                fleet_id = st.selectbox(
+                    "Vehicle",
+                    ["General / Non-vehicle"] + fleet["truck_id"].tolist(),
+                    key="finance_vehicle",
+                )
+                category = st.selectbox(
+                    "Cost category",
+                    ["Fuel", "Maintenance", "Toll", "Handling", "Other"],
+                    key="finance_category",
+                )
+                amount = st.number_input(
+                    "Amount (PKR)",
+                    min_value=0.0,
+                    step=500.0,
+                    key="finance_amount",
+                )
+                reference = st.text_input(
+                    "Reference / narration",
+                    key="finance_reference",
+                )
+                submitted = st.form_submit_button("Record Finance Entry")
+
+            if submitted:
+                new_no = f"FN-{len(st.session_state.finance_entries) + 1:03d}"
+                st.session_state.finance_entries.append({
+                    "entry_no": new_no,
+                    "fleet_id": None if fleet_id == "General / Non-vehicle" else fleet_id,
+                    "category": category,
+                    "amount": float(amount),
+                    "reference": reference or "Demo finance entry",
+                    "entry_time": datetime.now(timezone.utc),
+                })
+                st.success(f"{new_no} recorded.")
+                st.rerun()
+
+    view = pd.DataFrame(st.session_state.finance_entries).copy()
     view["entry_time"] = format_utc(view["entry_time"])
     st.dataframe(view, use_container_width=True, hide_index=True)
-    if not read_only:
-        st.caption("Demo accountant panel is read-only for data integrity; transaction entry can be added in a later workflow phase.")
 
 
 def render_maintenance(role_name, read_only=False):
