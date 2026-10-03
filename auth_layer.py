@@ -63,6 +63,33 @@ def role_from_session(user, session):
     return role_name, role_slug, identity
 
 
+def resolve_database_identity(client, user_id):
+    role_response = (
+        client.table("user_roles")
+        .select("role")
+        .eq("user_id", str(user_id))
+        .maybe_single()
+        .execute()
+    )
+    role_row = role_response.data or {}
+    role_slug = role_row.get("role")
+    role_name = ROLE_BY_SLUG.get(role_slug)
+
+    profile_response = (
+        client.table("personnel_profiles")
+        .select("personnel_id,driver_name")
+        .eq("user_id", str(user_id))
+        .maybe_single()
+        .execute()
+    )
+    profile = profile_response.data or {}
+
+    return role_name, role_slug, {
+        "driver_name": profile.get("driver_name"),
+        "personnel_id": profile.get("personnel_id"),
+    }
+
+
 def sign_in(email, password):
     client = new_auth_client()
     response = client.auth.sign_in_with_password(
@@ -72,6 +99,14 @@ def sign_in(email, password):
     user = response.user
     session = response.session
     role_name, role_slug, identity = role_from_session(user, session)
+
+    if not role_name:
+        try:
+            role_name, role_slug, db_identity = resolve_database_identity(client, user.id)
+            identity["driver_name"] = identity["driver_name"] or db_identity["driver_name"]
+            identity["personnel_id"] = identity["personnel_id"] or db_identity["personnel_id"]
+        except Exception:
+            role_name = None
 
     if not role_name:
         try:
