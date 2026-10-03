@@ -11,13 +11,15 @@ The Streamlit app has two access modes:
 
 Permanent application roles are stored in `public.user_roles`, keyed by `auth.users.id`.
 
-The Custom Access Token Hook reads the user's role and personnel identity and adds these server-controlled JWT claims:
+Database RLS resolves the current role directly from `public.user_roles` using a private `SECURITY DEFINER` helper that is bound to `auth.uid()`. This is the authorization source of truth.
+
+The optional Custom Access Token Hook can also expose the user's role and personnel identity as server-controlled JWT claims:
 
 - `user_role`
 - `personnel_id`
 - `driver_name`
 
-The Streamlit UI uses these claims to choose the correct workspace. PostgreSQL RLS must independently enforce the same permissions on every protected table.
+The Streamlit UI first reads safe server claims when available, then falls back to the user's own RLS-protected `user_roles` and `personnel_profiles` records. PostgreSQL RLS independently enforces permissions on protected tables.
 
 ## Security rules
 
@@ -41,3 +43,17 @@ The Streamlit UI uses these claims to choose the correct workspace. PostgreSQL R
 6. Run RLS/security advisors and role-by-role access tests.
 7. Add only the project URL + publishable key to Streamlit secrets.
 8. Verify secure login, logout, role assignment, driver ownership and prohibited cross-role actions.
+
+
+## Demo account registry
+
+The private database registry pre-approves these role mappings:
+
+- logofficer14406@gmail.com → Log Staff Supervisor
+- technision865887@gmail.com → Motor Vehicle Maintenance
+- gatesecuritystaff65@gmail.com → Gate Security
+- driverAllahditta@gmail.com → Fleet Driver / Allah Ditta
+
+Creating an Auth user with one of these addresses automatically provisions `public.user_roles` and `public.personnel_profiles`. The driver identity also binds to the fictional Allah Ditta fleet assignment.
+
+Passwords are never stored in the repository or migration history.
