@@ -63,7 +63,7 @@ ROLE_CONFIG = {
         "slug": "accountant",
         "description": "Finance-only panel for transport, fuel, toll and maintenance cost visibility.",
         "panels": ["Accountant Panel"],
-        "permissions": {"view_finance"},
+        "permissions": {"view_finance", "record_finance"},
     },
     "Motor Vehicle Maintenance": {
         "slug": "motor_vehicle_maintenance",
