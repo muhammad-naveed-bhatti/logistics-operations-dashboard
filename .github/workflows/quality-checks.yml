@@ -17,3 +17,4 @@ jobs:
       - run: python -m compileall app.py demo_data.py scripts
       - run: python scripts/check_migrations.py
       - run: python scripts/smoke_test.py
+      - run: python scripts/app_smoke_test.py
