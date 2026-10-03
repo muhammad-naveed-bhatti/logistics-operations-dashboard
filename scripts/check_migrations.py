@@ -1,23 +1,29 @@
 from pathlib import Path
 import re
-import sys
 
-SQL_DIR = Path(__file__).resolve().parents[1] / "sql"
-PATTERN = re.compile(r"^(\d{3})_[a-z0-9_]+\.sql$")
+ROOT = Path(__file__).resolve().parents[1]
+MIGRATIONS_DIR = ROOT / "supabase" / "migrations"
+PATTERN = re.compile(r"^(\d{14})_[a-z0-9_]+\.sql$")
 
-files = sorted(p for p in SQL_DIR.glob("*.sql") if PATTERN.match(p.name))
+files = sorted(MIGRATIONS_DIR.glob("*.sql"))
 if not files:
-    raise SystemExit("No numbered SQL files found.")
+    raise SystemExit("No Supabase migration files found.")
 
-numbers = [int(PATTERN.match(p.name).group(1)) for p in files]
-expected = list(range(numbers[0], numbers[-1] + 1))
+versions = []
+for path in files:
+    match = PATTERN.match(path.name)
+    if not match:
+        raise SystemExit(f"Invalid Supabase migration filename: {path.name}")
+    versions.append(match.group(1))
 
-print("SQL checkpoints:")
-for p in files:
-    print(f"  ✓ {p.name}")
+if len(versions) != len(set(versions)):
+    raise SystemExit("Duplicate Supabase migration version detected.")
 
-if numbers != expected:
-    missing = sorted(set(expected) - set(numbers))
-    raise SystemExit(f"Migration/checkpoint numbering gap detected: {missing}")
+if versions != sorted(versions):
+    raise SystemExit("Supabase migrations are not in chronological order.")
 
-print("Migration/checkpoint numbering is sequential.")
+print("Supabase migration history:")
+for path in files:
+    print(f"  ✓ {path.name}")
+
+print(f"Validated {len(files)} timestamped migration files.")
