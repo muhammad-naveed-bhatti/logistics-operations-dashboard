@@ -1066,8 +1066,11 @@ def render_maintenance(role_name, read_only=False):
         ],
     ).copy()
 
-    fleet_lookup = dict(zip(fleet["id"].astype(str), fleet["truck_id"].astype(str)))
-    records["vehicle_code"] = records["fleet_id"].astype(str).map(fleet_lookup)
+    if auth_mode == "authenticated":
+        fleet_lookup = dict(zip(fleet["id"].astype(str), fleet["truck_id"].astype(str)))
+        records["vehicle_code"] = records["fleet_id"].astype(str).map(fleet_lookup)
+    else:
+        records["vehicle_code"] = records["fleet_id"].astype(str)
 
     open_jobs = int((records["status"] != "Completed").sum()) if not records.empty else 0
     high = int((records["priority"] == "High").sum()) if not records.empty else 0
