@@ -107,6 +107,10 @@ attention_items = delayed + low_stock
 
 st.title("Logistics Operations Dashboard")
 st.caption("Fleet • Dispatch • Materials • Aviation / Technical Spares")
+st.markdown(
+    '<p class="small-note">Portfolio demonstration using fictional operational data.</p>',
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
     st.caption(f"Data source: **{data_source}**")
@@ -174,8 +178,20 @@ with overview_tab:
     left, right = st.columns([1.1, 1])
     with left:
         st.markdown("#### Fleet Status Mix")
-        status_counts = fleet["status"].value_counts().rename_axis("status").reset_index(name="units")
-        st.bar_chart(status_counts.set_index("status"))
+        status_counts = (
+            fleet["status"]
+            .value_counts()
+            .rename_axis("status")
+            .reset_index(name="units")
+        )
+        st.bar_chart(
+            status_counts,
+            x="status",
+            y="units",
+            horizontal=True,
+            sort="-units",
+            height=300,
+        )
 
     with right:
         st.markdown("#### Inventory by Category")
@@ -184,7 +200,14 @@ with overview_tab:
             .sum()
             .sort_values("stock_qty", ascending=False)
         )
-        st.bar_chart(category_stock.set_index("category"))
+        st.bar_chart(
+            category_stock,
+            x="category",
+            y="stock_qty",
+            horizontal=True,
+            sort="-stock_qty",
+            height=360,
+        )
 
     st.markdown("#### Exception Board")
     exceptions = []
@@ -200,6 +223,11 @@ with overview_tab:
                 "Priority": row["priority"],
                 "Detail": row["cargo"],
                 "Location": row["destination"],
+                "Recommended Action": (
+                    "Review ETA / route and escalate delay"
+                    if row["status"] == "Delayed"
+                    else "Monitor priority movement to handover"
+                ),
             }
         )
 
@@ -214,11 +242,26 @@ with overview_tab:
                 "Priority": "Stock",
                 "Detail": row["item_name"],
                 "Location": row["location"],
+                "Recommended Action": "Raise replenishment / expedite supply",
             }
         )
 
     if exceptions:
-        st.dataframe(pd.DataFrame(exceptions), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(exceptions),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Reference": st.column_config.TextColumn("Reference", width="small"),
+                "Issue": st.column_config.TextColumn("Issue", width="medium"),
+                "Detail": st.column_config.TextColumn("Detail", width="medium"),
+                "Location": st.column_config.TextColumn("Location", width="medium"),
+                "Recommended Action": st.column_config.TextColumn(
+                    "Recommended Action",
+                    width="large",
+                ),
+            },
+        )
     else:
         st.success("No operational exceptions.")
 
