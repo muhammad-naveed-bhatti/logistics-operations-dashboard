@@ -25,17 +25,28 @@ def assert_no_exceptions(app, context):
         raise AssertionError(f"{context} exceptions: {messages}")
 
 
+def find_button(app, label):
+    for widget in app.button:
+        if widget.label == label:
+            return widget
+    raise AssertionError(f"Button not found: {label}")
+
+
 def role_widget(app):
     for widget in app.selectbox:
         if widget.label == "Demo role":
             return widget
-    raise AssertionError("Role selector was not rendered.")
+    raise AssertionError("Demo role selector was not rendered.")
 
 
 def main():
     app_path = ROOT / "app.py"
     app = AppTest.from_file(app_path, default_timeout=20).run()
-    assert_no_exceptions(app, "Initial Streamlit runtime")
+    assert_no_exceptions(app, "Login screen")
+
+    find_button(app, "Enter Portfolio Demo").click()
+    app.run()
+    assert_no_exceptions(app, "Portfolio demo entry")
 
     assert len(app.metric) >= 5, "Expected executive KPI metrics were not rendered."
     assert len(app.radio) >= 1, "Role-specific workspace navigation was not rendered."
@@ -46,7 +57,7 @@ def main():
         assert_no_exceptions(app, f"{role} workspace")
         assert len(app.radio) >= 1, f"{role} workspace navigation missing."
 
-    print("All role-based Streamlit workspace smoke tests passed.")
+    print("Login gate and all role workspaces passed the Streamlit smoke test.")
 
 
 if __name__ == "__main__":
