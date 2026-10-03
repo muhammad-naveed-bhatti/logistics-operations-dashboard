@@ -1,3 +1,6 @@
+import base64
+import json
+
 import streamlit as st
 from supabase import create_client
 
@@ -30,11 +33,34 @@ def current_auth():
     return st.session_state.get("auth_context")
 
 
-def role_from_user(user):
+def decode_access_token(access_token):
+    if not access_token:
+        return {}
+
+    try:
+        payload = access_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+    except Exception:
+        return {}
+
+
+def role_from_session(user, session):
+    claims = decode_access_token(session.access_token if session else None)
     app_metadata = getattr(user, "app_metadata", None) or {}
-    role_slug = app_metadata.get("role") or app_metadata.get("user_role")
+
+    role_slug = (
+        claims.get("user_role")
+        or app_metadata.get("role")
+        or app_metadata.get("user_role")
+    )
     role_name = ROLE_BY_SLUG.get(role_slug)
-    return role_name, role_slug
+
+    identity = {
+        "driver_name": claims.get("driver_name") or app_metadata.get("driver_name"),
+        "personnel_id": claims.get("personnel_id") or app_metadata.get("personnel_id"),
+    }
+    return role_name, role_slug, identity
 
 
 def sign_in(email, password):
@@ -45,7 +71,7 @@ def sign_in(email, password):
 
     user = response.user
     session = response.session
-    role_name, role_slug = role_from_user(user)
+    role_name, role_slug, identity = role_from_session(user, session)
 
     if not role_name:
         try:
@@ -62,8 +88,8 @@ def sign_in(email, password):
         "email": user.email,
         "role_name": role_name,
         "role_slug": role_slug,
-        "driver_name": app_metadata.get("driver_name"),
-        "personnel_id": app_metadata.get("personnel_id"),
+        "driver_name": identity["driver_name"],
+        "personnel_id": identity["personnel_id"],
         "access_token": session.access_token if session else None,
         "refresh_token": session.refresh_token if session else None,
     }
@@ -102,6 +128,7 @@ def enter_demo(role_name="Senior Officers"):
 def set_demo_role(role_name):
     if st.session_state.get("auth_context", {}).get("mode") != "demo":
         return
+
     st.session_state.demo_role = role_name
     st.session_state.auth_context["role_name"] = role_name
     st.session_state.auth_context["role_slug"] = ROLE_CONFIG[role_name]["slug"]
