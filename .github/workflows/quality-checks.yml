@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: python -m compileall app.py auth_layer.py rbac.py demo_data.py scripts
+      - run: python -m compileall app.py auth_layer.py data_access.py rbac.py demo_data.py scripts
       - run: python scripts/check_migrations.py
       - run: python scripts/smoke_test.py
       - run: python scripts/app_smoke_test.py
