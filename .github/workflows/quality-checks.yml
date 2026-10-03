@@ -18,3 +18,25 @@ jobs:
       - run: python scripts/check_migrations.py
       - run: python scripts/smoke_test.py
       - run: python scripts/app_smoke_test.py
+
+      - name: Upload repository snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: logistics-operations-dashboard-current
+          path: |
+            app.py
+            auth_layer.py
+            data_access.py
+            rbac.py
+            demo_data.py
+            README.md
+            requirements.txt
+            docs/
+            supabase/
+            sql/
+            scripts/
+            .streamlit/config.toml
+            .streamlit/secrets.example.toml
+            .github/workflows/quality-checks.yml
+          if-no-files-found: error
+          retention-days: 7
