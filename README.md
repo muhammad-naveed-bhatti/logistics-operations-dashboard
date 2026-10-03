@@ -2,41 +2,59 @@
 
 **Live Demo:** https://logistics-operations-dashboard-wo4jzwehznchbxovucckxq.streamlit.app/
 
-Portfolio-ready logistics operations system built with Python and Streamlit, with an optional Supabase backend.
+Portfolio-ready role-based logistics operations system built with Python, Streamlit and Supabase.
 
 ## Purpose
-This project demonstrates practical logistics-management capability in a recruiter-friendly, zero-cost demo: fleet visibility, dispatch monitoring, inventory/materials control, exception handling, operational KPIs, and aviation/technical-spares awareness.
+This project demonstrates practical logistics-management capability: fleet visibility, dispatch monitoring, inventory/materials control, finance, maintenance, soft gate-pass control, role-based access, operational KPIs and aviation/technical-spares awareness.
 
-## Zero-cost demo mode
-A live database is not required. If Supabase secrets are absent, the app automatically loads the realistic dataset in `demo_data.py`. This makes the Streamlit deployment self-contained for portfolio visitors.
+## Access modes
+The public Streamlit app has two paths:
 
-## Optional Supabase mode
-When `SUPABASE_URL` and `SUPABASE_KEY` are configured, the same user interface reads from Supabase tables. The public demo can therefore remain free while the repository still demonstrates a database-ready architecture.
+- **Secure Login** — Supabase email/password authentication with server-assigned roles.
+- **Portfolio Demo** — fictional operational data that recruiters can explore without an account.
+
+Authenticated users cannot choose their own role from the UI.
+
+## Live Supabase backend
+A dedicated zero-cost Supabase project has been created in region `ap-south-1`.
+
+Project URL:
+`https://duuzhgmvklnqiebadusc.supabase.co`
+
+The repository does **not** contain the live publishable key or any secret/service-role key.
 
 ## Authentication architecture
-The application now contains a secure-login path for Supabase email/password authentication while preserving a separate recruiter-friendly Portfolio Demo mode.
+Permanent roles are stored in `public.user_roles`. A Custom Access Token Hook injects server-controlled `user_role`, `personnel_id` and `driver_name` claims into the JWT.
 
-Authenticated roles are server-assigned and are never selectable from the UI. Permanent RBAC is prepared through `public.user_roles` + a Custom Access Token Hook; see `docs/authentication.md`.
+See `docs/authentication.md` and `docs/role_matrix.md`.
 
 ## Role-based access
-The demo now includes role-specific workspaces for Senior Officers, Log Staff Supervisor, Log Staff, Motor Vehicle Operations, Fleet Drivers, Accountant, Motor Vehicle Maintenance, and Gate Security.
+Supported roles:
 
-Motor Vehicle Operations can generate soft gate passes. Gate Security can validate the active pass and record vehicle IN/OUT movements. Driver access is limited to the selected driver's own assignment/pass in the demo simulation.
+- Senior Officers
+- Log Staff Supervisor
+- Log Staff
+- Motor Vehicle Operations
+- Fleet Drivers
+- Accountant
+- Motor Vehicle Maintenance
+- Gate Security
 
-See `docs/role_matrix.md` for the full access matrix. UI restrictions are a demo layer; production enforcement will use Supabase Auth + RLS.
+Motor Vehicle Operations generates soft gate passes. Gate Security validates passes and records vehicle IN/OUT movement. Drivers are restricted to their own assignment/pass in authenticated mode.
 
 ## Dashboard capabilities
 - Executive operational-readiness KPIs
-- Schedule-health and stock-readiness indicators
-- Fleet status and priority filters
-- Vehicle location map
-- Delay / critical-load exception board
-- Aviation and technical-spares inventory
-- Reorder alerts
-- Dispatch event log
-- Automated management brief
-- CSV exports for operational snapshots
-- Automatic local demo-data fallback
+- Fleet status / priority filters and map
+- Dispatch event monitoring
+- Technical and aviation-spares inventory
+- Reorder watchlist
+- Finance panel
+- Maintenance workflow
+- Soft gate-pass generation
+- Gate IN/OUT movement log
+- Management brief and exception board
+- CSV operational snapshots
+- Secure login + Portfolio Demo fallback
 
 ## Run locally
 ```bash
@@ -46,29 +64,42 @@ streamlit run app.py
 
 ## Quality checks
 ```bash
-python -m compileall app.py demo_data.py scripts
+python -m compileall app.py auth_layer.py rbac.py demo_data.py scripts
 python scripts/check_migrations.py
 python scripts/smoke_test.py
 python scripts/app_smoke_test.py
 ```
 
-GitHub Actions runs the same checks on pushes and pull requests.
+GitHub Actions runs these checks on pushes and pull requests.
 
-## Database versioning / migration discipline
-SQL is versioned under `sql/`:
+## Database migration discipline
+The authoritative applied migration history is mirrored under:
 
-- `001_initial_schema.sql` — initial schema, indexes, RLS and grants
-- `002_sample_data.sql` — optional database seed/checkpoint data
-- `pending_rbac_gate_workflow.sql` — reviewed schema draft for gate/maintenance/finance workflow
-- `pending_auth_rbac.sql` — permanent user-role + Auth-hook schema draft
-Both are intentionally pending until the dedicated Supabase project/migration workflow is approved.
+`supabase/migrations/`
 
-Future schema changes should receive the next numbered migration/checkpoint rather than silently rewriting earlier database history. The migration checker validates sequential numbering.
+Current live migration chain:
 
-## Streamlit deployment
-The repository is intentionally self-contained. A public Streamlit deployment can run in demo mode without secrets. Supabase can be connected later without redesigning the dashboard.
+- `20261003032938_base_operational_schema.sql`
+- `20261003032943_permanent_auth_rbac.sql`
+- `20261003032947_role_workflow_tables.sql`
+- `20261003032950_role_based_rls_policies.sql`
+- `20261003033037_optimize_rbac_policies_and_indexes.sql`
+- `20261003033153_harden_data_api_grants.sql`
+
+The `sql/` folder contains the original starter schema and demo seed data; it is no longer the authoritative live migration history.
+
+Future schema changes must be applied as a new migration and then mirrored into `supabase/migrations/`. Existing applied migrations should not be silently rewritten.
+
+## Current backend verification
+- RLS enabled on all public application tables.
+- Supabase security advisor reports no security lints.
+- Anonymous table grants removed.
+- Authenticated table grants reduced to the operations required by the application.
+- Role policies use server-issued JWT role claims.
+- Demo seed data loaded: 8 fleet rows, 10 inventory rows and 4 dispatch events.
 
 ## Security
 - Never commit `.streamlit/secrets.toml`.
-- Use only a Supabase publishable key in Streamlit.
-- Keep service-role / secret keys out of client-facing configuration.
+- Use only the Supabase project URL + publishable key in Streamlit.
+- Never expose the service-role/secret key.
+- UI hiding is not treated as a security boundary; database RLS independently enforces access.
