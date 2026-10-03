@@ -1,12 +1,13 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
 
-from demo_data import build_demo_data
+from demo_data import build_demo_data, build_role_demo_data
+from rbac import ROLE_CONFIG, has_permission, role_description, role_panels
 
 st.set_page_config(
-    page_title="Logistics Operations Dashboard",
+    page_title="Role-Based Logistics Operations System",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -23,6 +24,14 @@ st.markdown("""
 }
 .small-note {opacity:.72;font-size:.86rem;}
 .section-note {opacity:.80;font-size:.93rem;margin-top:-.35rem;}
+.role-chip {
+    display:inline-block;
+    padding:.28rem .65rem;
+    border:1px solid rgba(128,128,128,.28);
+    border-radius:999px;
+    font-size:.85rem;
+    margin:.1rem 0 .55rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -37,11 +46,7 @@ def has_supabase_config():
 @st.cache_resource
 def get_supabase():
     from supabase import create_client
-
-    return create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"],
-    )
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 
 @st.cache_data(ttl=10)
@@ -63,9 +68,22 @@ def load_data():
             )
         except Exception:
             pass
-
     fleet, inventory, dispatch = build_demo_data()
     return fleet, inventory, dispatch, "Demo dataset"
+
+
+def initialise_role_demo_state():
+    if "gate_passes" not in st.session_state:
+        passes, movements, maintenance, finance = build_role_demo_data()
+        st.session_state.gate_passes = passes.to_dict("records")
+        st.session_state.gate_movements = movements.to_dict("records")
+        st.session_state.maintenance_records = maintenance.to_dict("records")
+        st.session_state.finance_entries = finance.to_dict("records")
+
+
+def format_utc(series):
+    parsed = pd.to_datetime(series, errors="coerce", utc=True)
+    return parsed.dt.strftime("%d %b %Y %H:%M UTC").fillna("—")
 
 
 def status_badge(value):
@@ -80,6 +98,16 @@ def status_badge(value):
     return f"{icons.get(value, '•')} {value}"
 
 
+def event_badge(value):
+    icons = {
+        "DISPATCHED": "🚚 Dispatched",
+        "DELAY_ALERT": "⚠️ Delay Alert",
+        "LOADING": "📥 Loading",
+        "ARRIVED": "✅ Arrived",
+    }
+    return icons.get(value, str(value).replace("_", " ").title())
+
+
 def pct(numerator, denominator):
     return round((numerator / denominator) * 100, 1) if denominator else 0.0
 
@@ -88,116 +116,87 @@ def csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
 
-def format_utc(series):
-    parsed = pd.to_datetime(series, errors="coerce", utc=True)
-    return parsed.dt.strftime("%d %b %Y %H:%M UTC").fillna("—")
-
-
-def event_badge(value):
-    icons = {
-        "DISPATCHED": "🚚 Dispatched",
-        "DELAY_ALERT": "⚠️ Delay Alert",
-        "LOADING": "📥 Loading",
-        "ARRIVED": "✅ Arrived",
-    }
-    return icons.get(value, value.replace("_", " ").title())
-
-
 fleet, inventory, dispatch, data_source = load_data()
+initialise_role_demo_state()
+
+gate_passes = pd.DataFrame(st.session_state.gate_passes)
+gate_movements = pd.DataFrame(st.session_state.gate_movements)
+maintenance_records = pd.DataFrame(st.session_state.maintenance_records)
+finance_entries = pd.DataFrame(st.session_state.finance_entries)
 
 fleet_count = len(fleet)
-maintenance = int((fleet["status"] == "Maintenance").sum()) if not fleet.empty else 0
+maintenance_count = int((fleet["status"] == "Maintenance").sum()) if not fleet.empty else 0
 delayed = int((fleet["status"] == "Delayed").sum()) if not fleet.empty else 0
-in_transit = int((fleet["status"] == "In Transit").sum()) if not fleet.empty else 0
 critical = int((fleet["priority"] == "Critical").sum()) if not fleet.empty else 0
-active_movements = int(fleet["status"].isin(["In Transit", "Loading", "Unloading", "Delayed"]).sum()) if not fleet.empty else 0
-low_stock = int((inventory["stock_qty"] <= inventory["reorder_level"]).sum()) if not inventory.empty else 0
+active_movements = int(
+    fleet["status"].isin(["In Transit", "Loading", "Unloading", "Delayed"]).sum()
+) if not fleet.empty else 0
+low_stock = int(
+    (inventory["stock_qty"] <= inventory["reorder_level"]).sum()
+) if not inventory.empty else 0
 
-operational_units = max(fleet_count - maintenance, 0)
+operational_units = max(fleet_count - maintenance_count, 0)
 operational_readiness = pct(operational_units, fleet_count)
 schedule_health = pct(max(active_movements - delayed, 0), active_movements)
-stock_ready_items = max(len(inventory) - low_stock, 0)
-stock_readiness = pct(stock_ready_items, len(inventory))
+stock_readiness = pct(max(len(inventory) - low_stock, 0), len(inventory))
 attention_items = delayed + low_stock
 
-st.title("Logistics Operations Dashboard")
-st.caption("Fleet • Dispatch • Materials • Aviation / Technical Spares")
-st.markdown(
-    '<p class="small-note">Portfolio demonstration using fictional operational data.</p>',
-    unsafe_allow_html=True,
-)
-
 with st.sidebar:
+    st.header("Role-Based Access")
+    selected_role = st.selectbox(
+        "Demo role",
+        list(ROLE_CONFIG.keys()),
+        help="Portfolio demo: this simulates role-based access. Real enforcement will use Auth + database RLS.",
+    )
+    st.caption(role_description(selected_role))
+    selected_panel = st.radio("Workspace", role_panels(selected_role))
+
+    st.divider()
     st.caption(f"Data source: **{data_source}**")
     if st.button("Refresh dashboard", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    st.header("Operational Filters")
-    status_options = ["All"] + sorted(fleet["status"].dropna().unique().tolist()) if not fleet.empty else ["All"]
-    priority_options = ["All"] + sorted(fleet["priority"].dropna().unique().tolist()) if not fleet.empty else ["All"]
-    selected_status = st.selectbox("Fleet status", status_options)
-    selected_priority = st.selectbox("Priority", priority_options)
-    search = st.text_input("Search cargo / destination / driver")
-
-    st.divider()
-    st.subheader("Portfolio Demo")
-    st.caption(
-        "Self-contained demo mode works without a database. "
-        "The same interface is Supabase-ready for a live backend."
-    )
-
-filtered = fleet.copy()
-if not filtered.empty:
-    if selected_status != "All":
-        filtered = filtered[filtered["status"] == selected_status]
-    if selected_priority != "All":
-        filtered = filtered[filtered["priority"] == selected_priority]
-    if search:
-        mask = (
-            filtered[["driver", "destination", "cargo", "truck_id"]]
-            .fillna("")
-            .astype(str)
-            .apply(lambda column: column.str.contains(search, case=False))
-            .any(axis=1)
+    with st.expander("Access restrictions"):
+        permissions = sorted(ROLE_CONFIG[selected_role]["permissions"])
+        for permission in permissions:
+            st.write("✓", permission.replace("_", " ").title())
+        st.caption(
+            "UI hiding is only the demo layer. Production security must also enforce these rules in Auth/RLS."
         )
-        filtered = filtered[mask]
 
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Operational Readiness", f"{operational_readiness}%")
-k2.metric("Schedule Health", f"{schedule_health}%")
-k3.metric("Stock Readiness", f"{stock_readiness}%")
-k4.metric("Active Movements", active_movements)
-k5.metric("Attention Items", attention_items)
-
-if attention_items:
-    st.warning(
-        f"Control desk attention: {delayed} delayed vehicle(s), "
-        f"{low_stock} item(s) at/below reorder level, and "
-        f"{critical} critical-priority load(s)."
-    )
-else:
-    st.success("Operations are within the current demo thresholds.")
-
-overview_tab, fleet_tab, materials_tab, dispatch_tab, brief_tab = st.tabs(
-    ["Executive Overview", "Fleet & Map", "Materials", "Dispatch Log", "Management Brief"]
+st.title("Logistics Operations Management System")
+st.caption("Role-based Fleet • Dispatch • Materials • Finance • Maintenance • Gate Control")
+st.markdown(
+    f'<span class="role-chip">Current role: {selected_role}</span>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<p class="small-note">Portfolio demonstration using fictional operational data.</p>',
+    unsafe_allow_html=True,
 )
 
-with overview_tab:
-    st.subheader("Operational Snapshot")
-    st.markdown(
-        '<p class="section-note">A compact control-room view of fleet readiness, schedule risk and stock availability.</p>',
-        unsafe_allow_html=True,
-    )
+
+def render_executive_overview():
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Operational Readiness", f"{operational_readiness}%")
+    k2.metric("Schedule Health", f"{schedule_health}%")
+    k3.metric("Stock Readiness", f"{stock_readiness}%")
+    k4.metric("Active Movements", active_movements)
+    k5.metric("Attention Items", attention_items)
+
+    if attention_items:
+        st.warning(
+            f"Control desk attention: {delayed} delayed vehicle(s), "
+            f"{low_stock} item(s) at/below reorder level, and "
+            f"{critical} critical-priority load(s)."
+        )
 
     left, right = st.columns([1.1, 1])
     with left:
         st.markdown("#### Fleet Status Mix")
         status_counts = (
-            fleet["status"]
-            .value_counts()
-            .rename_axis("status")
-            .reset_index(name="units")
+            fleet["status"].value_counts().rename_axis("status").reset_index(name="units")
         )
         st.bar_chart(
             status_counts,
@@ -207,7 +206,6 @@ with overview_tab:
             sort="-units",
             height=300,
         )
-
     with right:
         st.markdown("#### Inventory by Category")
         category_stock = (
@@ -226,364 +224,489 @@ with overview_tab:
 
     st.markdown("#### Exception Board")
     exceptions = []
-
     for _, row in fleet[
         fleet["status"].eq("Delayed") | fleet["priority"].eq("Critical")
     ].iterrows():
-        exceptions.append(
-            {
-                "Type": "Fleet",
-                "Reference": row["truck_id"],
-                "Issue": status_badge(row["status"]),
-                "Priority": row["priority"],
-                "Detail": row["cargo"],
-                "Location": row["destination"],
-                "Recommended Action": (
-                    "Review ETA / route and escalate delay"
-                    if row["status"] == "Delayed"
-                    else "Monitor priority movement to handover"
-                ),
-            }
-        )
-
+        exceptions.append({
+            "Type": "Fleet",
+            "Reference": row["truck_id"],
+            "Issue": status_badge(row["status"]),
+            "Priority": row["priority"],
+            "Detail": row["cargo"],
+            "Location": row["destination"],
+            "Recommended Action": (
+                "Review ETA / route and escalate delay"
+                if row["status"] == "Delayed"
+                else "Monitor priority movement to handover"
+            ),
+        })
     for _, row in inventory[
         inventory["stock_qty"] <= inventory["reorder_level"]
     ].iterrows():
-        exceptions.append(
-            {
-                "Type": "Inventory",
-                "Reference": row["item_code"],
-                "Issue": "🔻 Reorder",
-                "Priority": "Stock",
-                "Detail": row["item_name"],
-                "Location": row["location"],
-                "Recommended Action": "Raise replenishment / expedite supply",
-            }
+        exceptions.append({
+            "Type": "Inventory",
+            "Reference": row["item_code"],
+            "Issue": "🔻 Reorder",
+            "Priority": "Stock",
+            "Detail": row["item_name"],
+            "Location": row["location"],
+            "Recommended Action": "Raise replenishment / expedite supply",
+        })
+    st.dataframe(pd.DataFrame(exceptions), use_container_width=True, hide_index=True)
+
+
+def render_fleet():
+    st.subheader("Fleet & Movement Control")
+    f1, f2, f3 = st.columns([1, 1, 2])
+    with f1:
+        selected_status = st.selectbox(
+            "Fleet status",
+            ["All"] + sorted(fleet["status"].dropna().unique().tolist()),
+            key="fleet_status_filter",
+        )
+    with f2:
+        selected_priority = st.selectbox(
+            "Priority",
+            ["All"] + sorted(fleet["priority"].dropna().unique().tolist()),
+            key="fleet_priority_filter",
+        )
+    with f3:
+        search = st.text_input(
+            "Search vehicle / driver / cargo / destination",
+            key="fleet_search",
         )
 
-    if exceptions:
-        st.dataframe(
-            pd.DataFrame(exceptions),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Reference": st.column_config.TextColumn("Reference", width="small"),
-                "Issue": st.column_config.TextColumn("Issue", width="medium"),
-                "Detail": st.column_config.TextColumn("Detail", width="medium"),
-                "Location": st.column_config.TextColumn("Location", width="medium"),
-                "Recommended Action": st.column_config.TextColumn(
-                    "Recommended Action",
-                    width="large",
-                ),
-            },
+    filtered = fleet.copy()
+    if selected_status != "All":
+        filtered = filtered[filtered["status"] == selected_status]
+    if selected_priority != "All":
+        filtered = filtered[filtered["priority"] == selected_priority]
+    if search:
+        mask = (
+            filtered[["driver", "destination", "cargo", "truck_id"]]
+            .fillna("")
+            .astype(str)
+            .apply(lambda col: col.str.contains(search, case=False))
+            .any(axis=1)
         )
-    else:
-        st.success("No operational exceptions.")
+        filtered = filtered[mask]
 
-with fleet_tab:
-    st.subheader("Fleet Movement Map")
     if filtered.empty:
         st.info("No fleet rows match the selected filters.")
-    else:
-        map_rows = filtered.dropna(subset=["lat", "lon"]).copy()
-        if not map_rows.empty:
-            map_rows["map_color"] = map_rows.apply(
-                lambda row: (
-                    "#D32F2F"
-                    if row["status"] == "Delayed" or row["priority"] == "Critical"
-                    else "#1976D2"
-                ),
-                axis=1,
-            )
-            st.map(
-                map_rows,
-                latitude="lat",
-                longitude="lon",
-                color="map_color",
-                size=18000,
-                zoom=4,
-                height=430,
-            )
-            st.caption(
-                "Map emphasis: red points require higher attention; blue points are routine monitored movements."
-            )
+        return
 
-        table = filtered.copy()
-        table["status"] = table["status"].map(status_badge)
-        table["eta"] = format_utc(table["eta"])
-        table["last_update"] = format_utc(table["last_update"])
-        table = table.rename(
-            columns={
-                "truck_id": "Fleet ID",
-                "driver": "Driver",
-                "status": "Status",
-                "priority": "Priority",
-                "destination": "Destination",
-                "cargo": "Cargo",
-                "eta": "ETA (UTC)",
-                "last_update": "Last Update (UTC)",
-            }
+    map_rows = filtered.dropna(subset=["lat", "lon"]).copy()
+    if not map_rows.empty:
+        map_rows["map_color"] = map_rows.apply(
+            lambda row: (
+                "#D32F2F"
+                if row["status"] == "Delayed" or row["priority"] == "Critical"
+                else "#1976D2"
+            ),
+            axis=1,
         )
-        st.dataframe(
-            table[
-                [
-                    "Fleet ID",
-                    "Driver",
-                    "Status",
-                    "Priority",
-                    "Destination",
-                    "Cargo",
-                    "ETA (UTC)",
-                    "Last Update (UTC)",
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True,
+        st.map(
+            map_rows,
+            latitude="lat",
+            longitude="lon",
+            color="map_color",
+            size=18000,
+            zoom=4,
+            height=430,
         )
 
-        st.download_button(
-            "Download filtered fleet CSV",
-            csv_bytes(filtered),
-            file_name="fleet_snapshot.csv",
-            mime="text/csv",
-        )
+    table = filtered.copy()
+    table["status"] = table["status"].map(status_badge)
+    table["eta"] = format_utc(table["eta"])
+    table["last_update"] = format_utc(table["last_update"])
+    st.dataframe(
+        table[
+            ["truck_id", "driver", "status", "priority", "destination", "cargo", "eta", "last_update"]
+        ].rename(columns={
+            "truck_id":"Fleet ID",
+            "driver":"Driver",
+            "status":"Status",
+            "priority":"Priority",
+            "destination":"Destination",
+            "cargo":"Cargo",
+            "eta":"ETA (UTC)",
+            "last_update":"Last Update (UTC)",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.download_button(
+        "Download filtered fleet CSV",
+        csv_bytes(filtered),
+        file_name="fleet_snapshot.csv",
+        mime="text/csv",
+    )
 
-with materials_tab:
+
+def render_materials():
     st.subheader("Materials & Aviation Spares")
-
     serviceable = int((inventory["condition"] == "Serviceable").sum())
     calibration_due = int(
         inventory["condition"].astype(str).str.contains("Calibration Due", case=False).sum()
     )
-
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Tracked Lines", len(inventory))
     m2.metric("Reorder Required", low_stock)
     m3.metric("Serviceable", serviceable)
     m4.metric("Calibration Due", calibration_due)
 
-    inventory_view = inventory.copy()
-    inventory_view["stock_gap"] = (
-        inventory_view["stock_qty"] - inventory_view["reorder_level"]
-    )
-    inventory_view["reorder_status"] = inventory_view.apply(
-        lambda row: "🔴 Reorder"
-        if row["stock_qty"] <= row["reorder_level"]
-        else "🟢 OK",
+    view = inventory.copy()
+    view["Stock Gap"] = view["stock_qty"] - view["reorder_level"]
+    view["Status"] = view.apply(
+        lambda row: "🔴 Reorder" if row["stock_qty"] <= row["reorder_level"] else "🟢 OK",
         axis=1,
     )
-
-    low_stock_view = inventory_view[
-        inventory_view["stock_qty"] <= inventory_view["reorder_level"]
-    ].copy()
-
-    left_materials, right_materials = st.columns([1.2, 1])
-    with left_materials:
-        category = st.selectbox(
-            "Category",
-            ["All"] + sorted(inventory_view["category"].dropna().unique().tolist()),
-        )
-    with right_materials:
-        if not low_stock_view.empty:
-            st.warning(
-                f"{len(low_stock_view)} material line(s) need replenishment attention."
-            )
-        else:
-            st.success("No material line is at or below reorder level.")
-
+    category = st.selectbox(
+        "Category",
+        ["All"] + sorted(view["category"].dropna().unique().tolist()),
+        key="material_category",
+    )
     if category != "All":
-        inventory_view = inventory_view[inventory_view["category"] == category]
+        view = view[view["category"] == category]
 
     st.dataframe(
-        inventory_view[
-            [
-                "item_code",
-                "item_name",
-                "category",
-                "stock_qty",
-                "reorder_level",
-                "stock_gap",
-                "reorder_status",
-                "location",
-                "condition",
-            ]
-        ].rename(
-            columns={
-                "item_code": "Item Code",
-                "item_name": "Item",
-                "category": "Category",
-                "stock_qty": "Stock",
-                "reorder_level": "Reorder Level",
-                "stock_gap": "Stock Gap",
-                "reorder_status": "Status",
-                "location": "Location",
-                "condition": "Condition",
-            }
-        ),
+        view[
+            ["item_code","item_name","category","stock_qty","reorder_level","Stock Gap","Status","location","condition"]
+        ].rename(columns={
+            "item_code":"Item Code",
+            "item_name":"Item",
+            "category":"Category",
+            "stock_qty":"Stock",
+            "reorder_level":"Reorder Level",
+            "location":"Location",
+            "condition":"Condition",
+        }),
         use_container_width=True,
         hide_index=True,
     )
 
-    if not low_stock_view.empty:
+    reorder = inventory[inventory["stock_qty"] <= inventory["reorder_level"]]
+    if not reorder.empty:
         st.markdown("#### Reorder Watchlist")
         st.dataframe(
-            low_stock_view[
-                ["item_code", "item_name", "stock_qty", "reorder_level", "location"]
-            ].rename(
+            reorder[["item_code","item_name","stock_qty","reorder_level","location"]].rename(
                 columns={
-                    "item_code": "Item Code",
-                    "item_name": "Item",
-                    "stock_qty": "Stock",
-                    "reorder_level": "Reorder Level",
-                    "location": "Location",
+                    "item_code":"Item Code",
+                    "item_name":"Item",
+                    "stock_qty":"Stock",
+                    "reorder_level":"Reorder Level",
+                    "location":"Location",
                 }
             ),
             use_container_width=True,
             hide_index=True,
         )
 
-    st.download_button(
-        "Download materials CSV",
-        csv_bytes(inventory_view),
-        file_name="materials_snapshot.csv",
-        mime="text/csv",
+
+def render_dispatch():
+    st.subheader("Dispatch Log")
+    display = dispatch.merge(
+        fleet[["id", "truck_id"]],
+        left_on="fleet_id",
+        right_on="id",
+        how="left",
     )
+    display["event_time"] = pd.to_datetime(display["event_time"], errors="coerce", utc=True)
+    display = display.sort_values("event_time", ascending=False)
+    alerts = int((display["event_type"] == "DELAY_ALERT").sum())
+    arrivals = int((display["event_type"] == "ARRIVED").sum())
 
-with dispatch_tab:
-    st.subheader("Recent Dispatch Events")
-    display = (
-        dispatch.merge(
-            fleet[["id", "truck_id"]],
-            left_on="fleet_id",
-            right_on="id",
-            how="left",
-        )
-        if not dispatch.empty
-        else dispatch
-    )
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Logged Events", len(display))
+    d2.metric("Delay Alerts", alerts)
+    d3.metric("Arrivals", arrivals)
 
-    if not display.empty:
-        dispatch_alerts = int((display["event_type"] == "DELAY_ALERT").sum())
-        dispatch_arrivals = int((display["event_type"] == "ARRIVED").sum())
-        dispatch_starts = int(
-            display["event_type"].isin(["DISPATCHED", "LOADING"]).sum()
-        )
+    display["event_time"] = format_utc(display["event_time"])
+    display["event_type"] = display["event_type"].map(event_badge)
+    view = display[["event_time","truck_id","event_type","details"]].rename(columns={
+        "event_time":"Event Time (UTC)",
+        "truck_id":"Fleet ID",
+        "event_type":"Event",
+        "details":"Operational Detail",
+    })
+    st.dataframe(view, use_container_width=True, hide_index=True)
 
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Logged Events", len(display))
-        d2.metric("Delay Alerts", dispatch_alerts)
-        d3.metric("Movement Starts", dispatch_starts)
-        d4.metric("Arrivals", dispatch_arrivals)
 
-        display = display.copy()
-        display["event_time"] = pd.to_datetime(
-            display["event_time"], errors="coerce", utc=True
-        )
-        display = display.sort_values("event_time", ascending=False)
-        display["event_time"] = format_utc(display["event_time"])
-        display["event_type"] = display["event_type"].map(event_badge)
-
-    cols = [
-        column
-        for column in ["event_time", "truck_id", "event_type", "details"]
-        if column in display.columns
-    ]
-    dispatch_view = display[cols].rename(
-        columns={
-            "event_time": "Event Time (UTC)",
-            "truck_id": "Fleet ID",
-            "event_type": "Event",
-            "details": "Operational Detail",
-        }
-    )
-    st.dataframe(dispatch_view, use_container_width=True, hide_index=True)
-
-    st.download_button(
-        "Download dispatch log CSV",
-        csv_bytes(dispatch_view),
-        file_name="dispatch_log.csv",
-        mime="text/csv",
-    )
-
-with brief_tab:
+def render_management_brief():
     st.subheader("Management Brief")
     st.info(
         f"Fleet operational readiness is {operational_readiness}%. "
-        f"{active_movements} unit(s) are engaged in active movements, "
-        f"with {delayed} recorded delay(s)."
+        f"{active_movements} unit(s) are engaged in active movements with {delayed} delay(s)."
     )
     st.info(
         f"Inventory readiness is {stock_readiness}%. "
-        f"{low_stock} of {len(inventory)} tracked material line(s) are "
-        "at or below their reorder threshold."
+        f"{low_stock} of {len(inventory)} tracked material line(s) are at/below reorder level."
     )
-
-    if critical:
-        st.warning(
-            f"{critical} critical-priority shipment(s) require close monitoring "
-            "until delivery or handover."
-        )
-
-    if maintenance:
-        st.warning(
-            f"{maintenance} fleet unit(s) are under maintenance and are excluded "
-            "from operational availability."
-        )
-
     st.markdown("#### Priority Actions")
-    action_items = []
-
+    actions = []
     for _, row in fleet[fleet["status"] == "Delayed"].iterrows():
-        action_items.append(
+        actions.append(
             f"**{row['truck_id']}** — review ETA/route and escalate the delay for {row['cargo']}."
         )
-
     for _, row in inventory[
         inventory["stock_qty"] <= inventory["reorder_level"]
     ].iterrows():
-        action_items.append(
+        actions.append(
             f"**{row['item_code']}** — replenish {row['item_name']} "
             f"(stock {row['stock_qty']}, reorder level {row['reorder_level']})."
         )
-
     for _, row in fleet[fleet["status"] == "Maintenance"].iterrows():
-        action_items.append(
-            f"**{row['truck_id']}** — track maintenance completion before returning the unit to availability."
+        actions.append(
+            f"**{row['truck_id']}** — track maintenance completion before restoring availability."
         )
+    st.markdown("\n".join(f"- {item}" for item in actions))
 
-    if action_items:
-        st.markdown("\n".join(f"- {item}" for item in action_items))
-    else:
-        st.success("No immediate management action is required.")
 
-    st.markdown("#### Demonstrated Capabilities")
-    cap_left, cap_right = st.columns(2)
-    with cap_left:
-        st.markdown(
-            """
-- Fleet and dispatch visibility
-- Status / priority filtering
-- Delay and critical-load control
-- Geographic fleet visualization
-            """
-        )
-    with cap_right:
-        st.markdown(
-            """
-- Inventory reorder monitoring
-- Technical / aviation spares visibility
-- Management KPIs and briefing
-- Downloadable operational snapshots
-            """
-        )
+def render_gate_pass_operations(role_name):
+    st.subheader("Motor Vehicle Operations — Soft Gate Pass")
+    if not has_permission(role_name, "create_gate_pass"):
+        st.error("This role is not permitted to generate gate passes.")
+        return
 
     st.caption(
-        "Architecture note: the portfolio demo is self-contained and can optionally use Supabase as its live data layer."
+        "Operations issues the soft gate pass. Gate Security validates it and records actual IN/OUT movement."
     )
+
+    with st.form("gate_pass_form"):
+        fleet_id = st.selectbox("Vehicle", fleet["truck_id"].tolist())
+        vehicle = fleet[fleet["truck_id"] == fleet_id].iloc[0]
+        st.text_input("Driver", value=vehicle["driver"], disabled=True)
+        destination = st.text_input("Destination", value=str(vehicle["destination"]))
+        purpose = st.text_input("Movement purpose / cargo", value=str(vehicle["cargo"]))
+        valid_hours = st.number_input("Validity (hours)", min_value=1, max_value=48, value=12)
+        submitted = st.form_submit_button("Generate Soft Gate Pass")
+
+    if submitted:
+        now = datetime.now(timezone.utc)
+        new_no = f"GP-{1001 + len(st.session_state.gate_passes)}"
+        st.session_state.gate_passes.append({
+            "pass_no": new_no,
+            "fleet_id": fleet_id,
+            "driver": vehicle["driver"],
+            "destination": destination,
+            "purpose": purpose,
+            "issued_by": "MV Operations Desk",
+            "issued_at": now,
+            "valid_until": now + timedelta(hours=int(valid_hours)),
+            "status": "Issued",
+        })
+        st.success(f"Soft gate pass {new_no} generated.")
+        st.rerun()
+
+    passes = pd.DataFrame(st.session_state.gate_passes)
+    passes["issued_at"] = format_utc(passes["issued_at"])
+    passes["valid_until"] = format_utc(passes["valid_until"])
+    st.dataframe(passes, use_container_width=True, hide_index=True)
+
+
+def render_driver_panel():
+    st.subheader("Fleet Driver Panel")
+    driver = st.selectbox("Demo driver identity", sorted(fleet["driver"].unique()))
+    assignment = fleet[fleet["driver"] == driver].copy()
+    if assignment.empty:
+        st.info("No assignment found.")
+        return
+
+    row = assignment.iloc[0]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Vehicle", row["truck_id"])
+    c2.metric("Status", row["status"])
+    c3.metric("Priority", row["priority"])
+    c4.metric("Destination", row["destination"])
+    st.write("**Cargo / Task:**", row["cargo"])
+
+    passes = pd.DataFrame(st.session_state.gate_passes)
+    own_passes = passes[passes["driver"] == driver].copy()
+    st.markdown("#### My Soft Gate Pass")
+    if own_passes.empty:
+        st.info("No active gate pass issued to this driver.")
+    else:
+        own_passes["issued_at"] = format_utc(own_passes["issued_at"])
+        own_passes["valid_until"] = format_utc(own_passes["valid_until"])
+        st.dataframe(
+            own_passes[
+                ["pass_no","fleet_id","destination","purpose","issued_at","valid_until","status"]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+    st.caption("Driver access is restricted to own assignment and own soft gate-pass visibility.")
+
+
+def render_gate_security(role_name):
+    st.subheader("Gate Security Panel")
+    if not has_permission(role_name, "record_gate_movement"):
+        st.error("This role is not permitted to record gate movement.")
+        return
+
+    passes = pd.DataFrame(st.session_state.gate_passes)
+    active = passes[passes["status"].isin(["Issued", "Vehicle Out"])].copy()
+    if active.empty:
+        st.info("No active soft gate pass available.")
+        return
+
+    selected_pass = st.selectbox("Soft Gate Pass", active["pass_no"].tolist())
+    selected = active[active["pass_no"] == selected_pass].iloc[0]
+
+    a, b, c, d = st.columns(4)
+    a.metric("Vehicle", selected["fleet_id"])
+    b.metric("Driver", selected["driver"])
+    c.metric("Status", selected["status"])
+    d.metric("Destination", selected["destination"])
+    st.write("**Purpose:**", selected["purpose"])
+    st.write("**Valid until:**", format_utc(pd.Series([selected["valid_until"]])).iloc[0])
+
+    gate_name = st.selectbox("Gate", ["Main Gate", "Service Gate"])
+    remarks = st.text_input("Security remarks", value="Soft gate pass verified.")
+
+    out_disabled = selected["status"] != "Issued"
+    in_disabled = selected["status"] != "Vehicle Out"
+    left, right = st.columns(2)
+
+    with left:
+        if st.button("Record Vehicle OUT", disabled=out_disabled, use_container_width=True):
+            now = datetime.now(timezone.utc)
+            for record in st.session_state.gate_passes:
+                if record["pass_no"] == selected_pass:
+                    record["status"] = "Vehicle Out"
+            st.session_state.gate_movements.append({
+                "pass_no": selected_pass,
+                "fleet_id": selected["fleet_id"],
+                "driver": selected["driver"],
+                "movement": "OUT",
+                "gate": gate_name,
+                "recorded_by": "Gate Security",
+                "event_time": now,
+                "remarks": remarks,
+            })
+            st.success(f"OUT recorded for {selected_pass}.")
+            st.rerun()
+
+    with right:
+        if st.button("Record Vehicle IN", disabled=in_disabled, use_container_width=True):
+            now = datetime.now(timezone.utc)
+            for record in st.session_state.gate_passes:
+                if record["pass_no"] == selected_pass:
+                    record["status"] = "Closed"
+            st.session_state.gate_movements.append({
+                "pass_no": selected_pass,
+                "fleet_id": selected["fleet_id"],
+                "driver": selected["driver"],
+                "movement": "IN",
+                "gate": gate_name,
+                "recorded_by": "Gate Security",
+                "event_time": now,
+                "remarks": remarks,
+            })
+            st.success(f"IN recorded and gate pass {selected_pass} closed.")
+            st.rerun()
+
+    render_gate_movement_summary()
+
+
+def render_gate_movement_summary():
+    st.subheader("Gate Movement Summary")
+    movements = pd.DataFrame(st.session_state.gate_movements)
+    if movements.empty:
+        st.info("No gate movement recorded.")
+        return
+    movements = movements.copy()
+    movements["event_time"] = format_utc(movements["event_time"])
+    out_count = int((movements["movement"] == "OUT").sum())
+    in_count = int((movements["movement"] == "IN").sum())
+    g1, g2, g3 = st.columns(3)
+    g1.metric("Movement Records", len(movements))
+    g2.metric("OUT Records", out_count)
+    g3.metric("IN Records", in_count)
+    st.dataframe(movements, use_container_width=True, hide_index=True)
+
+
+def render_finance(read_only=True):
+    title = "Finance Summary" if read_only else "Accountant Panel"
+    st.subheader(title)
+    finance = pd.DataFrame(st.session_state.finance_entries)
+    total = float(finance["amount"].sum())
+    fuel = float(finance.loc[finance["category"] == "Fuel", "amount"].sum())
+    maint = float(finance.loc[finance["category"] == "Maintenance", "amount"].sum())
+    f1, f2, f3 = st.columns(3)
+    f1.metric("Recorded Cost", f"PKR {total:,.0f}")
+    f2.metric("Fuel Cost", f"PKR {fuel:,.0f}")
+    f3.metric("Maintenance Cost", f"PKR {maint:,.0f}")
+
+    by_category = finance.groupby("category", as_index=False)["amount"].sum()
+    st.bar_chart(by_category, x="category", y="amount", horizontal=True, height=300)
+    view = finance.copy()
+    view["entry_time"] = format_utc(view["entry_time"])
+    st.dataframe(view, use_container_width=True, hide_index=True)
+    if not read_only:
+        st.caption("Demo accountant panel is read-only for data integrity; transaction entry can be added in a later workflow phase.")
+
+
+def render_maintenance(role_name, read_only=False):
+    title = "Maintenance Overview" if read_only else "Motor Vehicle Maintenance Panel"
+    st.subheader(title)
+    records = pd.DataFrame(st.session_state.maintenance_records)
+
+    open_jobs = int((records["status"] != "Completed").sum())
+    high = int((records["priority"] == "High").sum())
+    completed = int((records["status"] == "Completed").sum())
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Open Jobs", open_jobs)
+    m2.metric("High Priority", high)
+    m3.metric("Completed", completed)
+
+    view = records.copy()
+    view["opened_at"] = format_utc(view["opened_at"])
+    view["target_completion"] = format_utc(view["target_completion"])
+    st.dataframe(view, use_container_width=True, hide_index=True)
+
+    if read_only or not has_permission(role_name, "update_maintenance"):
+        return
+
+    st.markdown("#### Update Workshop Job")
+    selected_job = st.selectbox("Job", records["job_no"].tolist())
+    current = records[records["job_no"] == selected_job].iloc[0]
+    new_status = st.selectbox(
+        "New status",
+        ["Scheduled", "In Progress", "Awaiting Parts", "Completed"],
+        index=["Scheduled", "In Progress", "Awaiting Parts", "Completed"].index(current["status"])
+        if current["status"] in ["Scheduled", "In Progress", "Awaiting Parts", "Completed"]
+        else 0,
+    )
+    if st.button("Update maintenance status"):
+        for record in st.session_state.maintenance_records:
+            if record["job_no"] == selected_job:
+                record["status"] = new_status
+        st.success(f"{selected_job} updated to {new_status}.")
+        st.rerun()
+
+
+PANEL_RENDERERS = {
+    "Executive Overview": lambda: render_executive_overview(),
+    "Fleet & Map": lambda: render_fleet(),
+    "Materials": lambda: render_materials(),
+    "Dispatch Log": lambda: render_dispatch(),
+    "Management Brief": lambda: render_management_brief(),
+    "Gate Pass Operations": lambda: render_gate_pass_operations(selected_role),
+    "Driver Panel": lambda: render_driver_panel(),
+    "Gate Security Panel": lambda: render_gate_security(selected_role),
+    "Gate Movement Summary": lambda: render_gate_movement_summary(),
+    "Finance Summary": lambda: render_finance(read_only=True),
+    "Accountant Panel": lambda: render_finance(read_only=False),
+    "Maintenance Overview": lambda: render_maintenance(selected_role, read_only=True),
+    "Maintenance Panel": lambda: render_maintenance(selected_role, read_only=False),
+}
+
+PANEL_RENDERERS[selected_panel]()
 
 generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 st.markdown(
-    f'<p class="small-note">Portfolio demo • Data source: {data_source} • '
-    f'Generated: {generated_at} • Python + Streamlit + Supabase-ready architecture.</p>',
+    f'<p class="small-note">Portfolio demo • Role: {selected_role} • Data source: {data_source} • '
+    f'Generated: {generated_at} • UI RBAC simulation; production enforcement requires Auth + RLS.</p>',
     unsafe_allow_html=True,
 )
