@@ -91,18 +91,17 @@ def update_maintenance_status(client, record_id, new_status):
 
 def record_finance_entry(
     client,
-    fleet_id,
+    vehicle_code,
     category,
     amount,
     reference,
-    user_id,
 ):
-    payload = {
-        "entry_no": f"FN-{datetime.now(timezone.utc):%y%m%d%H%M%S}-{uuid4().hex[:4].upper()}",
-        "fleet_id": str(fleet_id) if fleet_id else None,
-        "category": category,
-        "amount": float(amount),
-        "reference": reference,
-        "recorded_by": str(user_id),
-    }
-    return client.table("transport_finance_entries").insert(payload).execute().data
+    return client.rpc(
+        "record_finance_entry",
+        {
+            "p_vehicle_code": vehicle_code or "",
+            "p_category": category,
+            "p_amount": float(amount),
+            "p_reference": reference,
+        },
+    ).execute().data
