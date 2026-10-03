@@ -5,11 +5,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from demo_data import build_demo_data
+from demo_data import build_demo_data, build_role_demo_data
 
 
 def main():
     fleet, inventory, dispatch = build_demo_data()
+    gate_passes, gate_movements, maintenance, finance = build_role_demo_data()
 
     required_fleet = {
         "id", "truck_id", "driver", "status", "lat", "lon",
@@ -32,7 +33,16 @@ def main():
     assert (fleet["status"] == "Delayed").any()
     assert (inventory["stock_qty"] <= inventory["reorder_level"]).any()
 
-    print("Demo data smoke test passed.")
+    assert {"pass_no", "fleet_id", "driver", "status"}.issubset(gate_passes.columns)
+    assert gate_passes["pass_no"].is_unique
+    assert {"movement", "gate", "event_time"}.issubset(gate_movements.columns)
+    assert {"job_no", "fleet_id", "status", "priority"}.issubset(maintenance.columns)
+    assert maintenance["job_no"].is_unique
+    assert {"entry_no", "category", "amount", "entry_time"}.issubset(finance.columns)
+    assert finance["entry_no"].is_unique
+    assert (finance["amount"] >= 0).all()
+
+    print("Core and role-specific demo data smoke tests passed.")
 
 
 if __name__ == "__main__":
