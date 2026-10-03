@@ -85,17 +85,27 @@ Current live migration chain:
 - `20261003032950_role_based_rls_policies.sql`
 - `20261003033037_optimize_rbac_policies_and_indexes.sql`
 - `20261003033153_harden_data_api_grants.sql`
+- `20261003040221_provision_allowlisted_demo_accounts.sql`
+- `20261003040426_support_server_app_metadata_role_fallback.sql`
+- `20261003040532_enable_pg_net_for_bootstrap.sql`
+- `20261003040748_database_authoritative_role_resolution.sql`
+- `20261003040939_remove_unused_pg_net_bootstrap.sql`
 
 The `sql/` folder contains the original starter schema and demo seed data; it is no longer the authoritative live migration history.
 
 Future schema changes must be applied as a new migration and then mirrored into `supabase/migrations/`. Existing applied migrations should not be silently rewritten.
+
+## Demo account provisioning
+Four demo login identities are pre-approved in the private provisioning registry. When an Auth user is created with one of those emails, a database trigger automatically assigns the permanent role and personnel profile. The Allah Ditta driver account is also linked to fictional fleet unit `FLT-109`.
+
+Actual passwords are deliberately not stored in GitHub, SQL migrations, or documentation.
 
 ## Current backend verification
 - RLS enabled on all public application tables.
 - Supabase security advisor reports no security lints.
 - Anonymous table grants removed.
 - Authenticated table grants reduced to the operations required by the application.
-- Role policies use server-issued JWT role claims.
+- Current RLS authorization resolves the permanent role directly from `public.user_roles` through a private security-definer helper bound to `auth.uid()`; JWT role claims are optional convenience metadata, not the authorization source of truth.
 - Demo seed data loaded: 8 fleet rows, 10 inventory rows and 4 dispatch events.
 
 ## Security
