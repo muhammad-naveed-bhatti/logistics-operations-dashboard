@@ -88,6 +88,21 @@ def csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
 
+def format_utc(series):
+    parsed = pd.to_datetime(series, errors="coerce", utc=True)
+    return parsed.dt.strftime("%d %b %Y %H:%M UTC").fillna("—")
+
+
+def event_badge(value):
+    icons = {
+        "DISPATCHED": "🚚 Dispatched",
+        "DELAY_ALERT": "⚠️ Delay Alert",
+        "LOADING": "📥 Loading",
+        "ARRIVED": "✅ Arrived",
+    }
+    return icons.get(value, value.replace("_", " ").title())
+
+
 fleet, inventory, dispatch, data_source = load_data()
 
 fleet_count = len(fleet)
@@ -270,27 +285,56 @@ with fleet_tab:
     if filtered.empty:
         st.info("No fleet rows match the selected filters.")
     else:
-        map_rows = filtered.dropna(subset=["lat", "lon"])
+        map_rows = filtered.dropna(subset=["lat", "lon"]).copy()
         if not map_rows.empty:
+            map_rows["map_color"] = map_rows.apply(
+                lambda row: (
+                    "#D32F2F"
+                    if row["status"] == "Delayed" or row["priority"] == "Critical"
+                    else "#1976D2"
+                ),
+                axis=1,
+            )
             st.map(
-                map_rows.rename(columns={"lat": "latitude", "lon": "longitude"})[
-                    ["latitude", "longitude"]
-                ]
+                map_rows,
+                latitude="lat",
+                longitude="lon",
+                color="map_color",
+                size=18000,
+                zoom=4,
+                height=430,
+            )
+            st.caption(
+                "Map emphasis: red points require higher attention; blue points are routine monitored movements."
             )
 
         table = filtered.copy()
         table["status"] = table["status"].map(status_badge)
+        table["eta"] = format_utc(table["eta"])
+        table["last_update"] = format_utc(table["last_update"])
+        table = table.rename(
+            columns={
+                "truck_id": "Fleet ID",
+                "driver": "Driver",
+                "status": "Status",
+                "priority": "Priority",
+                "destination": "Destination",
+                "cargo": "Cargo",
+                "eta": "ETA (UTC)",
+                "last_update": "Last Update (UTC)",
+            }
+        )
         st.dataframe(
             table[
                 [
-                    "truck_id",
-                    "driver",
-                    "status",
-                    "priority",
-                    "destination",
-                    "cargo",
-                    "eta",
-                    "last_update",
+                    "Fleet ID",
+                    "Driver",
+                    "Status",
+                    "Priority",
+                    "Destination",
+                    "Cargo",
+                    "ETA (UTC)",
+                    "Last Update (UTC)",
                 ]
             ],
             use_container_width=True,
@@ -306,7 +350,22 @@ with fleet_tab:
 
 with materials_tab:
     st.subheader("Materials & Aviation Spares")
+
+    serviceable = int((inventory["condition"] == "Serviceable").sum())
+    calibration_due = int(
+        inventory["condition"].astype(str).str.contains("Calibration Due", case=False).sum()
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Tracked Lines", len(inventory))
+    m2.metric("Reorder Required", low_stock)
+    m3.metric("Serviceable", serviceable)
+    m4.metric("Calibration Due", calibration_due)
+
     inventory_view = inventory.copy()
+    inventory_view["stock_gap"] = (
+        inventory_view["stock_qty"] - inventory_view["reorder_level"]
+    )
     inventory_view["reorder_status"] = inventory_view.apply(
         lambda row: "🔴 Reorder"
         if row["stock_qty"] <= row["reorder_level"]
@@ -314,10 +373,24 @@ with materials_tab:
         axis=1,
     )
 
-    category = st.selectbox(
-        "Category",
-        ["All"] + sorted(inventory_view["category"].dropna().unique().tolist()),
-    )
+    low_stock_view = inventory_view[
+        inventory_view["stock_qty"] <= inventory_view["reorder_level"]
+    ].copy()
+
+    left_materials, right_materials = st.columns([1.2, 1])
+    with left_materials:
+        category = st.selectbox(
+            "Category",
+            ["All"] + sorted(inventory_view["category"].dropna().unique().tolist()),
+        )
+    with right_materials:
+        if not low_stock_view.empty:
+            st.warning(
+                f"{len(low_stock_view)} material line(s) need replenishment attention."
+            )
+        else:
+            st.success("No material line is at or below reorder level.")
+
     if category != "All":
         inventory_view = inventory_view[inventory_view["category"] == category]
 
@@ -329,14 +402,45 @@ with materials_tab:
                 "category",
                 "stock_qty",
                 "reorder_level",
+                "stock_gap",
                 "reorder_status",
                 "location",
                 "condition",
             ]
-        ],
+        ].rename(
+            columns={
+                "item_code": "Item Code",
+                "item_name": "Item",
+                "category": "Category",
+                "stock_qty": "Stock",
+                "reorder_level": "Reorder Level",
+                "stock_gap": "Stock Gap",
+                "reorder_status": "Status",
+                "location": "Location",
+                "condition": "Condition",
+            }
+        ),
         use_container_width=True,
         hide_index=True,
     )
+
+    if not low_stock_view.empty:
+        st.markdown("#### Reorder Watchlist")
+        st.dataframe(
+            low_stock_view[
+                ["item_code", "item_name", "stock_qty", "reorder_level", "location"]
+            ].rename(
+                columns={
+                    "item_code": "Item Code",
+                    "item_name": "Item",
+                    "stock_qty": "Stock",
+                    "reorder_level": "Reorder Level",
+                    "location": "Location",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.download_button(
         "Download materials CSV",
@@ -358,16 +462,45 @@ with dispatch_tab:
         else dispatch
     )
 
+    if not display.empty:
+        dispatch_alerts = int((display["event_type"] == "DELAY_ALERT").sum())
+        dispatch_arrivals = int((display["event_type"] == "ARRIVED").sum())
+        dispatch_starts = int(
+            display["event_type"].isin(["DISPATCHED", "LOADING"]).sum()
+        )
+
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Logged Events", len(display))
+        d2.metric("Delay Alerts", dispatch_alerts)
+        d3.metric("Movement Starts", dispatch_starts)
+        d4.metric("Arrivals", dispatch_arrivals)
+
+        display = display.copy()
+        display["event_time"] = pd.to_datetime(
+            display["event_time"], errors="coerce", utc=True
+        )
+        display = display.sort_values("event_time", ascending=False)
+        display["event_time"] = format_utc(display["event_time"])
+        display["event_type"] = display["event_type"].map(event_badge)
+
     cols = [
         column
         for column in ["event_time", "truck_id", "event_type", "details"]
         if column in display.columns
     ]
-    st.dataframe(display[cols], use_container_width=True, hide_index=True)
+    dispatch_view = display[cols].rename(
+        columns={
+            "event_time": "Event Time (UTC)",
+            "truck_id": "Fleet ID",
+            "event_type": "Event",
+            "details": "Operational Detail",
+        }
+    )
+    st.dataframe(dispatch_view, use_container_width=True, hide_index=True)
 
     st.download_button(
         "Download dispatch log CSV",
-        csv_bytes(display[cols]),
+        csv_bytes(dispatch_view),
         file_name="dispatch_log.csv",
         mime="text/csv",
     )
@@ -397,17 +530,55 @@ with brief_tab:
             "from operational availability."
         )
 
+    st.markdown("#### Priority Actions")
+    action_items = []
+
+    for _, row in fleet[fleet["status"] == "Delayed"].iterrows():
+        action_items.append(
+            f"**{row['truck_id']}** — review ETA/route and escalate the delay for {row['cargo']}."
+        )
+
+    for _, row in inventory[
+        inventory["stock_qty"] <= inventory["reorder_level"]
+    ].iterrows():
+        action_items.append(
+            f"**{row['item_code']}** — replenish {row['item_name']} "
+            f"(stock {row['stock_qty']}, reorder level {row['reorder_level']})."
+        )
+
+    for _, row in fleet[fleet["status"] == "Maintenance"].iterrows():
+        action_items.append(
+            f"**{row['truck_id']}** — track maintenance completion before returning the unit to availability."
+        )
+
+    if action_items:
+        st.markdown("\n".join(f"- {item}" for item in action_items))
+    else:
+        st.success("No immediate management action is required.")
+
     st.markdown("#### Demonstrated Capabilities")
-    st.markdown(
-        """
-- Fleet and dispatch visibility with status/priority filtering
-- Exception-based control for delay and critical loads
-- Inventory reorder monitoring for technical and aviation-related materials
+    cap_left, cap_right = st.columns(2)
+    with cap_left:
+        st.markdown(
+            """
+- Fleet and dispatch visibility
+- Status / priority filtering
+- Delay and critical-load control
 - Geographic fleet visualization
-- Management KPIs and operational briefing
+            """
+        )
+    with cap_right:
+        st.markdown(
+            """
+- Inventory reorder monitoring
+- Technical / aviation spares visibility
+- Management KPIs and briefing
 - Downloadable operational snapshots
-- Optional Supabase data layer with a zero-cost built-in demo fallback
-        """
+            """
+        )
+
+    st.caption(
+        "Architecture note: the portfolio demo is self-contained and can optionally use Supabase as its live data layer."
     )
 
 generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
