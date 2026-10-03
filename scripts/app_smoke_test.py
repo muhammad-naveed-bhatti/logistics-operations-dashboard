@@ -16,10 +16,13 @@ def main():
         messages = [str(item.value) for item in app.exception]
         raise AssertionError(f"Streamlit runtime exceptions: {messages}")
 
-    assert len(app.metric) >= 5, "Expected dashboard KPI metrics were not rendered."
-    assert len(app.tabs) >= 5, "Expected dashboard tabs were not rendered."
+    assert len(app.metric) >= 5, "Expected executive KPI metrics were not rendered."
+    assert any(
+        item.label == "Demo role" for item in app.selectbox
+    ), "Role selector was not rendered."
+    assert len(app.radio) >= 1, "Role-specific workspace navigation was not rendered."
 
-    print("Streamlit app runtime smoke test passed.")
+    print("Role-based Streamlit app runtime smoke test passed.")
 
 
 if __name__ == "__main__":
